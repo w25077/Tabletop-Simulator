@@ -792,7 +792,7 @@ public partial class ObjectManager : Node2D, IWorldPicker, IWheelHandler
 
 	// ------------------------------------------------------------------ 右键菜单
 
-	private void OnContextMenuRequested(Vector2 worldPos)
+	private void OnContextMenuRequested(Vector2 worldPos, Vector2 screenPos)
 	{
 		if (_menu is null)
 			return;
@@ -804,8 +804,7 @@ public partial class ObjectManager : Node2D, IWorldPicker, IWheelHandler
 			// 空白处右键：只给"全选"这类全局项
 			_menu.Clear();
 			_menu.AddItem("全选", (int)MenuId.SidesBase + 900);
-			_menu.Position = (Vector2I)DisplayServer.MouseGetPosition();
-			_menu.Popup();
+			ShowMenuAt(screenPos);
 			return;
 		}
 
@@ -817,8 +816,48 @@ public partial class ObjectManager : Node2D, IWorldPicker, IWheelHandler
 		}
 
 		BuildMenu(target);
-		_menu.Position = (Vector2I)DisplayServer.MouseGetPosition();
+		ShowMenuAt(screenPos);
+	}
+
+	/// <summary>
+	/// 把菜单弹在指定的<b>视口坐标</b>处，并收拢到视口内。
+	///
+	/// 两个要点：
+	/// <list type="number">
+	/// <item>必须用输入事件带来的视口坐标，不能用 <c>DisplayServer.MouseGetPosition()</c> ——
+	/// 后者是桌面坐标，和嵌入式子窗口的 <c>Position</c> 不是一个坐标系。</item>
+	/// <item>必须自己做边界收拢。鼠标靠近右/下边缘时，菜单会伸出视口外。</item>
+	/// </list>
+	/// </summary>
+	private void ShowMenuAt(Vector2 screenPos)
+	{
+		if (_menu is null)
+			return;
+
+		// 先用内容最小尺寸估一次（此时还没 Popup，拿不到实际尺寸）
+		Vector2 estimate = _menu.GetContentsMinimumSize();
+		if (estimate.X <= 0f || estimate.Y <= 0f)
+			estimate = new Vector2(180f, 140f);
+
+		_menu.Position = (Vector2I)ClampToViewport(screenPos, estimate);
 		_menu.Popup();
+
+		// Popup 之后才有真实尺寸，用真实值再收一次，避免估小了导致仍然溢出
+		Vector2 actual = _menu.Size;
+		if (actual.X > 0f && actual.Y > 0f)
+		{
+			Vector2 corrected = ClampToViewport(screenPos, actual);
+			if (!corrected.IsEqualApprox((Vector2)_menu.Position))
+				_menu.Position = (Vector2I)corrected;
+		}
+	}
+
+	private Vector2 ClampToViewport(Vector2 pos, Vector2 menuSize)
+	{
+		Vector2 viewport = GetViewportRect().Size;
+		return new Vector2(
+			Mathf.Clamp(pos.X, 0f, Mathf.Max(viewport.X - menuSize.X, 0f)),
+			Mathf.Clamp(pos.Y, 0f, Mathf.Max(viewport.Y - menuSize.Y, 0f)));
 	}
 
 	private void BuildMenu(TabletopObject target)

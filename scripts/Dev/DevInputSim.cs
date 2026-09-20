@@ -225,7 +225,7 @@ internal static class DevInputSim
 		int emptyClicks = 0;
 		int contextMenus = 0;
 		vc.EmptyAreaClicked += _ => emptyClicks++;
-		vc.ContextMenuRequested += _ => contextMenus++;
+		vc.ContextMenuRequested += (_, _) => contextMenus++;
 
 		// 空白点必须动态找 —— 写死坐标在桌面有内容之后就会假失败
 		Vector2 clickAt = objects is not null

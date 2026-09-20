@@ -24,6 +24,7 @@ internal static class DevSequenceSim
 
 		await ClickThenBoxSelect(host, cam, objects, r);
 		await RightClickMenu(host, cam, objects, r);
+		await MenuClampsAtEdge(host, cam, objects, r);
 		await ShiftExtractFromPile(host, cam, objects, r);
 		await DragWholePile(host, cam, objects, r);
 		await SelectAllThenDuplicate(host, objects, r);
@@ -33,6 +34,7 @@ internal static class DevSequenceSim
 		// 明明五项子断言全绿却报失败。
 		r["pass"] = AsBool(r, "click_then_box_ok")
 			&& AsBool(r, "menu_ok")
+			&& AsBool(r, "menu_edge_ok")
 			&& AsBool(r, "shift_extract_ok")
 			&& AsBool(r, "pile_drag_ok")
 			&& AsBool(r, "dup_ok");
@@ -133,6 +135,18 @@ internal static class DevSequenceSim
 		r["menu_item_count"] = menu.ItemCount;
 		r["menu_is_inside_tree"] = menu.IsInsideTree();
 
+		// 菜单必须弹在鼠标旁边。这个断言是回归保护：
+		// 早先用 DisplayServer.MouseGetPosition()（桌面坐标）去定位嵌入式子窗口
+		// （视口坐标），结果菜单整体偏移、被顶到视口最右边。
+		Vector2 menuPos = menu.Position;
+		Vector2 viewport = cam.GetViewportRect().Size;
+
+		r["menu_position"] = new Godot.Collections.Array { menuPos.X, menuPos.Y };
+		r["menu_offset_from_click_px"] = menuPos.DistanceTo(screen);
+		r["menu_inside_viewport"] = menuPos.X >= 0f && menuPos.Y >= 0f
+			&& menuPos.X < viewport.X && menuPos.Y < viewport.Y;
+		r["menu_near_cursor"] = menuPos.DistanceTo(screen) < 4f;
+
 		var labels = new Godot.Collections.Array();
 		for (int i = 0; i < menu.ItemCount && i < 12; i++)
 			labels.Add(menu.GetItemText(i));
@@ -142,7 +156,52 @@ internal static class DevSequenceSim
 		menu.Hide();
 		await DevInputSim.Frame(host);
 
-		r["menu_ok"] = menu.IsInsideTree() && menu.ItemCount > 0;
+		r["menu_ok"] = menu.IsInsideTree() && menu.ItemCount > 0
+			&& AsBool(r, "menu_near_cursor") && AsBool(r, "menu_inside_viewport");
+	}
+
+	// ------------------------------------------------------------------ 顺序 2b
+
+	/// <summary>
+	/// 贴着视口右下角右键：菜单必须被收拢回视口内，不能伸出去。
+	/// 光测"菜单位置 ≈ 光标位置"是不够的 —— 靠近边缘时光标本身就在视口内，
+	/// 但菜单会从光标向右下展开、整块跑到视口外面。
+	/// </summary>
+	private static async Task MenuClampsAtEdge(Node host, BoardCamera cam, ObjectManager objects, Godot.Collections.Dictionary r)
+	{
+		PopupMenu? menu = objects.ContextMenu;
+		if (menu is null)
+		{
+			r["menu_edge_ok"] = false;
+			return;
+		}
+
+		Vector2 viewport = cam.GetViewportRect().Size;
+		// 避开底部 HUD（提示条约 1080-34 起），但仍贴着右下
+		var corner = new Vector2(viewport.X - 24f, viewport.Y - 120f);
+
+		DevInputSim.PushButton(corner, MouseButton.Right, true);
+		await DevInputSim.Frame(host);
+		DevInputSim.PushButton(corner, MouseButton.Right, false);
+		await DevInputSim.Frame(host);
+		await DevInputSim.Frame(host);
+
+		Vector2 pos = menu.Position;
+		Vector2 size = menu.Size;
+		var end = new Vector2(pos.X + size.X, pos.Y + size.Y);
+
+		r["menu_edge_click"] = new Godot.Collections.Array { corner.X, corner.Y };
+		r["menu_edge_position"] = new Godot.Collections.Array { pos.X, pos.Y };
+		r["menu_edge_size"] = new Godot.Collections.Array { size.X, size.Y };
+		r["menu_edge_end"] = new Godot.Collections.Array { end.X, end.Y };
+		r["menu_edge_overflow_x"] = Mathf.Max(end.X - viewport.X, 0f);
+		r["menu_edge_overflow_y"] = Mathf.Max(end.Y - viewport.Y, 0f);
+
+		bool inside = pos.X >= 0f && pos.Y >= 0f && end.X <= viewport.X + 1f && end.Y <= viewport.Y + 1f;
+		r["menu_edge_ok"] = inside && menu.Visible;
+
+		menu.Hide();
+		await DevInputSim.Frame(host);
 	}
 
 	// ------------------------------------------------------------------ 顺序 3

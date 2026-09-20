@@ -69,8 +69,14 @@ public partial class ViewportController : Node
 	/// <summary>左键在空白处单击（未拖拽）—— 用来取消选中。</summary>
 	[Signal] public delegate void EmptyAreaClickedEventHandler(Vector2 worldPos);
 
-	/// <summary>右键轻点（未拖拽）—— 请求上下文菜单。</summary>
-	[Signal] public delegate void ContextMenuRequestedEventHandler(Vector2 worldPos);
+	/// <summary>
+	/// 右键轻点（未拖拽）—— 请求上下文菜单。
+	/// 第二个参数是<b>视口坐标</b>（不是桌面坐标），菜单必须用它来定位：
+	/// <c>PopupMenu</c> 是嵌入式子窗口，它的 <c>Position</c> 属于视口坐标系。
+	/// 早先这里只传世界坐标、让菜单自己去问 <c>DisplayServer.MouseGetPosition()</c>，
+	/// 拿到的是桌面坐标，于是菜单位置整体偏移、还会被顶到视口最右边。
+	/// </summary>
+	[Signal] public delegate void ContextMenuRequestedEventHandler(Vector2 worldPos, Vector2 screenPos);
 
 	/// <summary>视角发生变化（缩放或平移）。</summary>
 	[Signal] public delegate void ViewChangedEventHandler();
@@ -181,7 +187,7 @@ public partial class ViewportController : Node
 			case Gesture.PanPending:
 				// 按了平移键但没动 —— 右键当上下文菜单，其余忽略
 				if (mb.ButtonIndex == MouseButton.Right)
-					EmitSignal(SignalName.ContextMenuRequested, world);
+					EmitSignal(SignalName.ContextMenuRequested, world, screen);
 				break;
 
 			case Gesture.Panning:
