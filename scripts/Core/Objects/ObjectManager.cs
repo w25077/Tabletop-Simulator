@@ -82,6 +82,9 @@ public partial class ObjectManager : Node2D, IWorldPicker, IWheelHandler
 
 	public IReadOnlyDictionary<int, Pile> Piles => _piles;
 
+	/// <summary>右键上下文菜单（挂在 HUD 那层）。自检用它验证菜单真的弹出来了，而不只是发了信号。</summary>
+	public PopupMenu? ContextMenu => _menu;
+
 	[Signal] public delegate void SelectionChangedEventHandler(int count);
 	[Signal] public delegate void ObjectCountChangedEventHandler(int count);
 	[Signal] public delegate void GridSnapChangedEventHandler(bool enabled);

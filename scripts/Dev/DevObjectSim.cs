@@ -29,7 +29,7 @@ internal static class DevObjectSim
 		// 各步骤互相影响，所以每步都用"按当前状态重新挑目标"的方式，
 		// 而不是一开始抓引用 —— 拖拽之后位置就变了。
 		await DragToEmptyArea(host, cam, objects, r);
-		await RotateAndFlip(host, objects, r);
+		await RotateAndFlip(host, cam, objects, r);
 		await FormPile(host, cam, objects, r);
 		await BoxSelect(host, cam, objects, r);
 		await RollDice(host, cam, objects, r);
@@ -46,7 +46,7 @@ internal static class DevObjectSim
 	/// <summary>把一张散件卡拖到真空中，断言位移精确等于「屏幕位移 / 缩放」。</summary>
 	private static async Task DragToEmptyArea(Node host, BoardCamera cam, ObjectManager objects, Godot.Collections.Dictionary r)
 	{
-		CardObject? card = FindLooseCard(objects);
+		CardObject? card = FindLooseCard(objects, cam);
 		if (card is null)
 		{
 			r["drag_ok"] = false;
@@ -81,9 +81,9 @@ internal static class DevObjectSim
 
 	// ------------------------------------------------------------------ 2. 旋转 / 翻面
 
-	private static async Task RotateAndFlip(Node host, ObjectManager objects, Godot.Collections.Dictionary r)
+	private static async Task RotateAndFlip(Node host, BoardCamera cam, ObjectManager objects, Godot.Collections.Dictionary r)
 	{
-		CardObject? card = FindLooseCard(objects);
+		CardObject? card = FindLooseCard(objects, cam);
 		if (card is null)
 		{
 			r["rotate_ok"] = false;
@@ -160,7 +160,7 @@ internal static class DevObjectSim
 	/// </summary>
 	private static async Task BoxSelect(Node host, BoardCamera cam, ObjectManager objects, Godot.Collections.Dictionary r)
 	{
-		CardObject? card = FindLooseCard(objects);
+		CardObject? card = FindLooseCard(objects, cam);
 		if (card is null)
 		{
 			r["box_select_ok"] = false;
@@ -281,12 +281,16 @@ internal static class DevObjectSim
 		DevInputSim.PushButton(startScreen + totalScreenDelta, MouseButton.Left, false);
 	}
 
-	private static CardObject? FindLooseCard(ObjectManager objects)
+	private static CardObject? FindLooseCard(ObjectManager objects, BoardCamera cam)
 	{
 		for (int i = objects.AllObjects.Count - 1; i >= 0; i--)
 		{
 			TabletopObject obj = objects.AllObjects[i];
-			if (obj is CardObject card && card.PileId == 0 && card.Visible && !card.IsFaceDown)
+
+			// 必须挑屏幕上看得见的：前面的步骤可能把物件拖到视口之外，
+			// 对它合成点击会落在视口外，得到毫无意义的失败。
+			if (obj is CardObject card && card.PileId == 0 && card.Visible && !card.IsFaceDown
+				&& DevInputSim.IsOnScreen(cam, card.Position))
 				return card;
 		}
 

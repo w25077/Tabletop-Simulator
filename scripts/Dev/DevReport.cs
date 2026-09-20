@@ -69,11 +69,164 @@ internal static class DevReport
 
 		report["regions"] = RegionProbe(frame, vpSize);
 		report["objects"] = ObjectProbe(main);
+		report["visual"] = VisualProbe(main, frame);
 
 		if (main.GetNodeOrNull("Camera2D") is BoardCamera cam)
 			report["camera_anchor_invariant"] = CameraAnchorProbe(cam);
 
 		return report;
+	}
+
+	// ------------------------------------------------------------------ 像素级视觉断言
+
+	/// <summary>
+	/// 对每个物件做「渲染在你该在的位置、且是你该有的颜色」的机械断言。
+	///
+	/// 这是没有视觉能力时能做到的最强验证：把物件的世界包围盒投影到屏幕，
+	/// 在它内部采样主色，再和它定义的填充色比对。
+	/// 能一次性抓住「整个物件没画出来」「画错位置」「颜色串了」这三类问题。
+	/// </summary>
+	private static Godot.Collections.Dictionary VisualProbe(Node main, Image frame)
+	{
+		var result = new Godot.Collections.Dictionary();
+
+		ObjectManager? objects = main.GetNodeOrNull<ObjectManager>("Objects");
+		if (objects is null || main.GetNodeOrNull("Camera2D") is not BoardCamera cam)
+		{
+			result["skipped"] = "缺少物件管理器或相机";
+			return result;
+		}
+
+		var items = new Godot.Collections.Array();
+		int checkedCount = 0;
+		int passCount = 0;
+		var seenKinds = new System.Collections.Generic.Dictionary<Data.ObjectKind, int>();
+
+		foreach (TabletopObject obj in objects.AllObjects)
+		{
+			// 上限放宽到能覆盖全部三种物件类型（卡 / Token / 骰子），
+			// 但每种只取前几个 —— 报告别膨胀成整桌快照。
+			if (checkedCount >= 20)
+				break;
+
+			if (!obj.Visible || !DevInputSim.IsOnScreen(cam, obj.Position))
+				continue;
+
+			if (seenKinds.TryGetValue(obj.Kind, out int seen) && seen >= 4)
+				continue;
+
+			Color expected = ExpectedFill(obj);
+			Rect2 screenRect = ScreenRectOf(obj, cam);
+
+			// 往里收一圈，避开描边与投影；剩下的区域主色应当是填充色
+			float inset = Mathf.Min(screenRect.Size.X, screenRect.Size.Y) * 0.16f;
+			Rect2 inner = screenRect.Grow(-inset);
+
+			if (inner.Size.X < 4f || inner.Size.Y < 4f)
+				continue;
+
+			Color sampled = DominantColor(frame, inner);
+			float distance = ColorDistance(expected, sampled);
+			bool ok = distance < 0.08f;
+
+			items.Add(new Godot.Collections.Dictionary
+			{
+				["uid"] = obj.Uid,
+				["kind"] = obj.Kind.ToString(),
+				["screen_rect"] = new Godot.Collections.Array
+				{
+					Mathf.Round(screenRect.Position.X), Mathf.Round(screenRect.Position.Y),
+					Mathf.Round(screenRect.Size.X), Mathf.Round(screenRect.Size.Y),
+				},
+				["expected_hex"] = expected.ToHtml(true),
+				["sampled_hex"] = sampled.ToHtml(true),
+				["distance"] = distance,
+				["ok"] = ok,
+			});
+
+			checkedCount++;
+			seenKinds[obj.Kind] = (seenKinds.TryGetValue(obj.Kind, out int c) ? c : 0) + 1;
+
+			if (ok)
+				passCount++;
+		}
+
+		result["checked"] = checkedCount;
+		result["passed"] = passCount;
+		result["pass"] = checkedCount > 0 && passCount == checkedCount;
+		result["items"] = items;
+		return result;
+	}
+
+	/// <summary>物件的预期主色：正面卡 = 卡面底色，盖放 = 卡背底色，Token = 填充色，骰子 = 外壳色。</summary>
+	private static Color ExpectedFill(TabletopObject obj) => obj switch
+	{
+		CardObject card => card.IsFaceDown ? card.Definition.BackTint : card.Definition.FaceTint,
+		TokenObject token => token.Definition.Fill,
+		DiceObject dice => dice.Tint,
+		_ => Colors.Magenta,
+	};
+
+	/// <summary>把旋转后的物件投影到屏幕，取轴对齐包围盒。</summary>
+	private static Rect2 ScreenRectOf(TabletopObject obj, BoardCamera cam)
+	{
+		Vector2 half = obj.Size * 0.5f;
+		Vector2 p0 = obj.ToGlobal(new Vector2(-half.X, -half.Y));
+		Vector2 p1 = obj.ToGlobal(new Vector2(half.X, -half.Y));
+		Vector2 p2 = obj.ToGlobal(new Vector2(half.X, half.Y));
+		Vector2 p3 = obj.ToGlobal(new Vector2(-half.X, half.Y));
+
+		Vector2 s0 = cam.WorldToScreen(p0);
+		Vector2 s1 = cam.WorldToScreen(p1);
+		Vector2 s2 = cam.WorldToScreen(p2);
+		Vector2 s3 = cam.WorldToScreen(p3);
+
+		Vector2 min = s0.Min(s1).Min(s2).Min(s3);
+		Vector2 max = s0.Max(s1).Max(s2).Max(s3);
+		return new Rect2(min, max - min);
+	}
+
+	private static Color DominantColor(Image img, Rect2 region)
+	{
+		int x0 = Mathf.Max(Mathf.RoundToInt(region.Position.X), 0);
+		int y0 = Mathf.Max(Mathf.RoundToInt(region.Position.Y), 0);
+		int x1 = Mathf.Min(Mathf.RoundToInt(region.End.X), img.GetWidth());
+		int y1 = Mathf.Min(Mathf.RoundToInt(region.End.Y), img.GetHeight());
+
+		var counts = new System.Collections.Generic.Dictionary<uint, int>();
+		uint best = 0;
+		int bestCount = 0;
+
+		for (int y = y0; y < y1; y += 2)
+		{
+			for (int x = x0; x < x1; x += 2)
+			{
+				uint c = img.GetPixel(x, y).ToRgba32();
+				counts.TryGetValue(c, out int n);
+				counts[c] = n + 1;
+
+				if (counts[c] > bestCount)
+				{
+					bestCount = counts[c];
+					best = c;
+				}
+			}
+		}
+
+		return Color.Color8(
+			(byte)((best >> 24) & 0xFF),
+			(byte)((best >> 16) & 0xFF),
+			(byte)((best >> 8) & 0xFF),
+			(byte)(best & 0xFF));
+	}
+
+	/// <summary>归一化 RGB 距离（0 = 完全相同，1 = 最远）。</summary>
+	private static float ColorDistance(Color a, Color b)
+	{
+		float dr = a.R - b.R;
+		float dg = a.G - b.G;
+		float db = a.B - b.B;
+		return Mathf.Sqrt(((dr * dr) + (dg * dg) + (db * db)) / 3f);
 	}
 
 	// ------------------------------------------------------------------ 物件

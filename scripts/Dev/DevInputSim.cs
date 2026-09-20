@@ -53,6 +53,31 @@ internal static class DevInputSim
 	}
 
 	/// <summary>
+	/// 按下（不松开）一个键。
+	/// 修饰键必须这样处理：物件系统用 <c>Input.IsKeyPressed(Key.Shift)</c> 判断，
+	/// 那读的是 Input 的全局按键状态，一次按下+松开是测不出来的。
+	/// </summary>
+	internal static void PushKeyDown(Key key)
+	{
+		var ev = new InputEventKey { Keycode = key, Pressed = true };
+
+		if (key == Key.Shift)
+			ev.ShiftPressed = true;
+
+		Input.ParseInputEvent(ev);
+	}
+
+	internal static void PushKeyUp(Key key)
+	{
+		var ev = new InputEventKey { Keycode = key, Pressed = false };
+
+		if (key == Key.Shift)
+			ev.ShiftPressed = false;
+
+		Input.ParseInputEvent(ev);
+	}
+
+	/// <summary>
 	/// 找一块真正空着的屏幕点。
 	/// 测试里<b>绝不能写死坐标</b> —— 桌面内容一变，写死的点就可能压在卡上，
 	/// 于是"点空白"根本没发生，断言假失败（这个坑 M2 第一版就踩了）。
@@ -95,6 +120,20 @@ internal static class DevInputSim
 		}
 
 		return false;
+	}
+
+	/// <summary>
+	/// 世界点是否落在当前视口内（留出 HUD 边距）。
+	/// 测试挑目标时<b>必须</b>过滤这个 —— 前面的步骤可能把物件拖到屏幕外，
+	/// 对屏幕外的点合成点击会落在视口之外，得到毫无意义的失败。
+	/// </summary>
+	internal static bool IsOnScreen(BoardCamera cam, Vector2 worldPos)
+	{
+		Vector2 screen = cam.WorldToScreen(worldPos);
+		Vector2 viewport = cam.GetViewportRect().Size;
+
+		return screen.X > 24f && screen.X < viewport.X - 24f
+			&& screen.Y > 56f && screen.Y < viewport.Y - 110f;
 	}
 
 	/// <summary>
@@ -207,6 +246,12 @@ internal static class DevInputSim
 
 		r["empty_area_clicks"] = emptyClicks;
 		r["context_menu_requests"] = contextMenus;
+
+		// 右键会弹出一个 PopupMenu，而 Popup 是 Window，会抢走后续的合成鼠标事件。
+		// 探针必须自己收尾，否则下一个探针的点击全落在菜单上 —— 表现为"结果时对时错"，
+		// 极难查。这个坑本轮就踩了一次。
+		objects?.ContextMenu?.Hide();
+		await Frame(host);
 
 		// ---------------------------------------------------------- 还原并判定
 		cam.SetZoomLevel(savedZoom, anchor);

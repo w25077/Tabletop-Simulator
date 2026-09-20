@@ -71,8 +71,11 @@ public partial class DiceObject : TabletopObject
 	/// <summary>最终结果（每个骰的点数）。</summary>
 	public IReadOnlyList<int> Values => _final;
 
-	/// <summary>随机种子，存档用。</summary>
+	/// <summary>实例级配置（面数 / 个数 / 随机种子）。</summary>
 	public int Seed { get; private set; }
+
+	/// <summary>当前外壳配色。自检用它做"像素颜色 = 期望颜色"的断言。</summary>
+	public Color Tint => TintForSides(Sides);
 
 	// ------------------------------------------------------------------ 配置
 

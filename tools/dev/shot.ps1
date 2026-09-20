@@ -19,6 +19,8 @@
 param(
     [Parameter(Mandatory = $true)][string]$Name,
     [int]$Frames = 40,
+    [string]$Zoom = "",
+    [string]$Center = "",
     [string]$GodotExe = $env:TT_GODOT_EXE
 )
 
@@ -63,16 +65,31 @@ Write-Host "[shot] rendering -> $shotPath"
 # user://logs/ because the harness sandbox blocks writes outside the workspace).
 # Redirect it into a buffer instead of letting PowerShell turn it into a
 # terminating error, which would abort the script mid-run.
+# Optional view overrides: -Zoom 1 renders at 100% so card face detail is legible
+# (the default "fit the whole table" view is ~52%, where card text is only a few px).
+$extraArgs = @()
+if ($Zoom)   { $extraArgs += @("--zoom", $Zoom) }
+if ($Center) { $extraArgs += @("--center", $Center) }
+
 $prevEap = $ErrorActionPreference
 $ErrorActionPreference = "Continue"
-$raw = & $GodotExe --path $projectDir -- --shot $shotPath --shot-frames $Frames --shot-exit 2>&1 | Out-String
+$raw = & $GodotExe --path $projectDir -- --shot $shotPath --shot-frames $Frames @extraArgs --shot-exit 2>&1 | Out-String
 $code = $LASTEXITCODE
 $ErrorActionPreference = $prevEap
 
 # Surface only the lines that matter.
+# 关键：除了脚本异常，也要把 Godot 自己的 ERROR / WARNING 打出来 ——
+# 漏掉它们会让人以为"跑起来没报错"，其实界面上正刷着错。
+$benign = 'user://logs|Failed to read the root certificate store'
 foreach ($line in ($raw -split "`r?`n")) {
-    if ($line -match '\[DevCapture\]|\[DevReport\]|SCRIPT ERROR|Parse Error|Unhandled exception') {
+    if ($line -match '\[DevCapture\]|\[DevObjectSim\]') {
         Write-Host "  $($line.Trim())"
+        continue
+    }
+
+    if ($line -match 'ERROR|WARNING|SCRIPT ERROR|Parse Error|Unhandled exception|Invalid|Cannot|null instance') {
+        if ($line -match $benign) { continue }
+        Write-Host "  !! $($line.Trim())" -ForegroundColor Yellow
     }
 }
 

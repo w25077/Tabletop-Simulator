@@ -28,6 +28,8 @@ public partial class DevCapture : Node
 	private const string FlagShot = "--shot";
 	private const string FlagFrames = "--shot-frames";
 	private const string FlagExit = "--shot-exit";
+	private const string FlagZoom = "--zoom";
+	private const string FlagCenter = "--center";
 
 	public override void _Ready()
 	{
@@ -41,9 +43,53 @@ public partial class DevCapture : Node
 		_ = CaptureAsync(shotPath, CmdLine.GetInt(FlagFrames, 30), CmdLine.HasFlag(FlagExit));
 	}
 
+	/// <summary>
+	/// 截图前覆盖视角。存在的意义：默认的"适配整桌"是 52% 缩放，
+	/// 卡面文字在那下面只有十几个像素，根本看不清版式细节。
+	/// 用 <c>--zoom 1</c> 出一张 100% 的近景图，才谈得上检查卡面渲染。
+	/// </summary>
+	private void ApplyViewOverrides()
+	{
+		string zoomRaw = CmdLine.GetValue(FlagZoom);
+		string centerRaw = CmdLine.GetValue(FlagCenter);
+
+		if (string.IsNullOrWhiteSpace(zoomRaw) && string.IsNullOrWhiteSpace(centerRaw))
+			return;
+
+		Node? main = GetTree().Root.GetNodeOrNull("Main");
+		if (main?.GetNodeOrNull("Camera2D") is not BoardCamera cam)
+			return;
+
+		if (float.TryParse(zoomRaw, System.Globalization.NumberStyles.Float,
+				System.Globalization.CultureInfo.InvariantCulture, out float zoom) && zoom > 0f)
+		{
+			cam.SetZoomLevel(zoom);
+		}
+
+		if (!string.IsNullOrWhiteSpace(centerRaw))
+		{
+			string[] parts = centerRaw.Split(',');
+			if (parts.Length == 2 &&
+				float.TryParse(parts[0], System.Globalization.NumberStyles.Float,
+					System.Globalization.CultureInfo.InvariantCulture, out float cx) &&
+				float.TryParse(parts[1], System.Globalization.NumberStyles.Float,
+					System.Globalization.CultureInfo.InvariantCulture, out float cy))
+			{
+				cam.CenterOn(new Vector2(cx, cy));
+			}
+		}
+
+		cam.SnapToTargets();
+	}
+
 	private async Task CaptureAsync(string shotPath, int frames, bool quitAfter)
 	{
-		// 等若干帧，让 _Ready 里的镜头定位、主题应用、字体光栅化都落定。
+		// 先等一帧再覆盖视角：Godot 是子节点先 _Ready，所以 DevCapture._Ready()
+		// 跑在 Main._Ready() 之前，那时 Main 还没把初始视角定下来，覆盖会被冲掉。
+		await ToSignal(RenderingServer.Singleton, RenderingServer.SignalName.FramePostDraw);
+		ApplyViewOverrides();
+
+		// 再等若干帧，让镜头定位、主题应用、字体光栅化都落定。
 		for (int i = 0; i < Mathf.Max(frames, 1); i++)
 			await ToSignal(RenderingServer.Singleton, RenderingServer.SignalName.FramePostDraw);
 
@@ -82,7 +128,10 @@ public partial class DevCapture : Node
 			report["input_simulation"] = await DevInputSim.CameraAndPointerProbe(this, cam, vc, objects);
 
 			if (objects is not null)
+			{
 				report["object_simulation"] = await DevObjectSim.Probe(this, cam, vc, objects);
+				report["sequence_simulation"] = await DevSequenceSim.Probe(this, cam, vc, objects);
+			}
 		}
 		else
 		{
