@@ -1,13 +1,20 @@
-# Godot 4+ 自动生成的导入缓存与编辑器状态。
-# 这个目录体积大且完全可由 .tscn / .tres 重新生成，绝不提交。
+# ---- Godot 4+ ----
+# 导入缓存与编辑器状态。体积大且完全可由 .tscn / .tres 重建，绝不提交。
 .godot/
-
-# Godot 的 Android 构建产物
+# Android 构建产物
 /android/
+# Android 媒体扫描标记，Godot 生成
+.nomedia
+# 由 CSV 自动生成的翻译资源
+*.translation
+# Mono/.NET 崩溃转储
+mono_crash.*.json
 
-# 导出预设。可能内含签名证书路径与密码，默认不提交。
+# ---- 导出配置 ----
+# 可能内含签名证书路径与密码，默认不提交。
 # 如果哪天要复现导出流程，再单独评估要不要放进来。
 export_presets.cfg
+export_credentials.cfg
 
 # ---- .NET / C# ----
 bin/
@@ -19,8 +26,15 @@ obj/
 # ---- 开发期产物 ----
 # 截图自检的输出（tools/dev/shot.ps1 生成）
 .dev/
+# DSH 会话回滚快照
+.dsh/
 
-# ---- MCP 插件的自更新备份缓存 ----
-# 注意：只忽略备份缓存，addons/godot_ai/ 插件本体是提交的。
-# 这个目录是插件每次更新前对自己做的整目录备份，5.5 MB / 287 个文件，纯冗余。
+# ---- 第三方插件 ----
+# 只忽略 Godot AI MCP 插件的自更新备份缓存，addons/godot_ai/ 插件本体是提交的。
+# 这个目录是插件每次更新前对自己做的整目录备份，约 5.5 MB / 287 个文件，纯冗余。
 /addons/.godot_ai_update/
+
+# ---- 误放在项目内的独立 git 仓库 ----
+# 曾经有个本地新建的空仓库被放在这里，会污染外层仓库（被记成 gitlink）。
+# 保留这条规则兜底，避免同类误操作再次发生。
+/Tabletop Simulator/
