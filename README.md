@@ -38,10 +38,13 @@
 
 ```powershell
 dotnet build TabletopSimulator.csproj
-& "D:\SteamLibrary\steamapps\common\Godot Engine\Godot_v4.7.2-stable_mono_win64_console.exe" --path .
+& "<Godot .NET 版的可执行文件>" --path .
 ```
 
-> 必须用 **.NET 版** Godot。标准版跑不了 C#。
+> 必须用 **.NET（mono）版** Godot，标准版跑不了 C#。
+> `tools/dev/shot.ps1` 会自己找它：先查 `PATH`，再查常见安装目录，
+> 最后遍历各盘符下的 `SteamLibrary\steamapps\common\Godot Engine`。
+> 装在别处就设环境变量 `TT_GODOT_EXE`，或给脚本传 `-GodotExe`。
 
 ### 操作
 
