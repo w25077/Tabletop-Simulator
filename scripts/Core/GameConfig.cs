@@ -35,10 +35,21 @@ public static class GameConfig
 	public const float DragThresholdPixels = 5.0f;
 
 	// ---- 物件外观 ----
-	/// <summary>悬停描边色。</summary>
+	/// <summary>悬停描边色（仅在没有更明确的操作目标时使用）。</summary>
 	public static readonly Color HoverOutline = new("#88c0d0");
-	/// <summary>选中描边色。</summary>
-	public static readonly Color SelectionOutline = new("#ebcb8b");
+
+	/// <summary>
+	/// 操作目标描边色 —— 下一次键盘操作会作用到的物件。
+	///
+	/// 这是唯一的"会被改"信号：亮黄 = 按 F / [ / Del 会作用到它；
+	/// 暗黄（<see cref="PassiveSelectionOutline"/>）= 在选中集里但不是当前目标。
+	/// 之所以不再用颜色区分"悬停"与"选中"，是因为在"悬停即为选中"的规则下，
+	/// 那样会出现「选中 A、悬停 B，两个都是描边，用户以为 F 会改 A」的误导。
+	/// </summary>
+	public static readonly Color ActionTargetOutline = new("#ebcb8b");
+
+	/// <summary>选中但不是当前操作目标时的描边色（暗黄）。</summary>
+	public static readonly Color PassiveSelectionOutline = new(0.92f, 0.80f, 0.55f, 0.35f);
 
 	/// <summary>堆叠数量徽章的填充 / 描边 / 文字色。</summary>
 	public static readonly Color PileBadgeFill = new("#2e3440");

@@ -85,6 +85,9 @@ public partial class ObjectManager : Node2D, IWorldPicker, IWheelHandler
 	/// <summary>右键上下文菜单（挂在 HUD 那层）。自检用它验证菜单真的弹出来了，而不只是发了信号。</summary>
 	public PopupMenu? ContextMenu => _menu;
 
+	/// <summary>当前鼠标悬停的物件。它是键盘操作的优先目标。</summary>
+	public TabletopObject? Hovered => _hovered;
+
 	[Signal] public delegate void SelectionChangedEventHandler(int count);
 	[Signal] public delegate void ObjectCountChangedEventHandler(int count);
 	[Signal] public delegate void GridSnapChangedEventHandler(bool enabled);
@@ -223,6 +226,9 @@ public partial class ObjectManager : Node2D, IWorldPicker, IWheelHandler
 			_hovered.IsHovered = true;
 			_hovered.QueueRedraw();
 		}
+
+		// 悬停就是"指着的那张"，操作目标随之变化，描边要跟着变
+		RefreshActionTargets();
 	}
 
 	private void OnPrimaryPressed(Vector2 worldPos)
@@ -241,6 +247,10 @@ public partial class ObjectManager : Node2D, IWorldPicker, IWheelHandler
 
 			AddToSelectionInternal(picked);
 		}
+
+		// 无条件广播一次：AddToSelectionInternal 自己不广播，
+		// 而操作目标的描边靠 EmitSelectionChanged 里的重算来更新。
+		EmitSelectionChanged();
 
 		BuildDragSet(picked, takeSingle);
 		_dragMoved = false;
@@ -407,10 +417,15 @@ public partial class ObjectManager : Node2D, IWorldPicker, IWheelHandler
 
 	public bool HandleWheel(float steps, Vector2 screenPos)
 	{
-		if (!Input.IsKeyPressed(Key.Alt) || _selection.Count == 0)
+		if (!Input.IsKeyPressed(Key.Alt))
 			return false;
 
-		RotateSelection(steps * GameConfig.WheelRotateStepDegrees);
+		// 和键盘操作同一套目标规则：悬停优先，其次选中集
+		List<TabletopObject> targets = ResolveActionTargets();
+		if (targets.Count == 0)
+			return false;
+
+		RotateObjects(targets, steps * GameConfig.WheelRotateStepDegrees);
 		return true;
 	}
 
@@ -438,7 +453,16 @@ public partial class ObjectManager : Node2D, IWorldPicker, IWheelHandler
 		obj.QueueRedraw();
 	}
 
-	private void EmitSelectionChanged() => EmitSignal(SignalName.SelectionChanged, _selection.Count);
+	/// <summary>
+	/// 选中集变化后统一在这里广播，顺便重算操作目标描边。
+	/// 放在这里而不是各调用点，是因为所有选中变化最终都会走到这一句 ——
+	/// 一处覆盖全部，不会漏。
+	/// </summary>
+	private void EmitSelectionChanged()
+	{
+		RefreshActionTargets();
+		EmitSignal(SignalName.SelectionChanged, _selection.Count);
+	}
 
 	public void SelectAll()
 	{
@@ -461,61 +485,109 @@ public partial class ObjectManager : Node2D, IWorldPicker, IWheelHandler
 		EmitSelectionChanged();
 	}
 
-	/// <summary>清空选中。</summary>
 	public void ClearSelection() => ClearSelectionInternal();
 
 	// ------------------------------------------------------------------ 物件操作
 
-	public void FlipSelection()
+	/// <summary>
+	/// 键盘/滚轮操作的<b>目标集</b>。用户要求「悬停即为选中」，即指着哪张就操作哪张，
+	/// 不必先点一下。规则：
+	/// <list type="number">
+	/// <item>鼠标悬停在某个物件上 → 操作它。</item>
+	/// <item>悬停的物件<b>本身已在选中集里</b> → 操作整个选中集。
+	///   这条很关键：框选完之后鼠标通常还停在其中一个上，
+	///   若按规则 1 只操作那一张，用户会觉得"框选白做了"。</item>
+	/// <item>什么都没悬停 → 操作选中集。</item>
+	/// </list>
+	/// </summary>
+	private List<TabletopObject> ResolveActionTargets()
 	{
-		foreach (TabletopObject obj in _selection)
+		if (_hovered is not null && IsInstanceValid(_hovered))
+		{
+			if (_selection.Contains(_hovered))
+				return new List<TabletopObject>(_selection);
+
+			return new List<TabletopObject> { _hovered };
+		}
+
+		return new List<TabletopObject>(_selection);
+	}
+
+	/// <summary>
+	/// 重算每个物件的 <see cref="TabletopObject.IsActionTarget"/>。
+	/// 悬停或选中一变就必须调 —— 描边完全靠这个标志，漏调就会出现
+	/// "描边说会改这张、实际改的是另一张"。
+	/// </summary>
+	private void RefreshActionTargets()
+	{
+		var targets = new HashSet<TabletopObject>(ResolveActionTargets());
+
+		foreach (TabletopObject obj in _drawOrder)
+		{
+			bool shouldBeTarget = targets.Contains(obj);
+			if (obj.IsActionTarget == shouldBeTarget)
+				continue;
+
+			obj.IsActionTarget = shouldBeTarget;
+			obj.QueueRedraw();
+		}
+	}
+
+	public void FlipObjects(IReadOnlyList<TabletopObject> targets)
+	{
+		foreach (TabletopObject obj in targets)
 		{
 			obj.IsFaceDown = !obj.IsFaceDown;
 			obj.QueueRedraw();
 		}
 	}
 
-	public void RotateSelection(float degrees)
+	public void RotateObjects(IReadOnlyList<TabletopObject> targets, float degrees)
 	{
-		foreach (TabletopObject obj in _selection)
+		foreach (TabletopObject obj in targets)
 		{
 			obj.RotationDeg += degrees;
 			obj.QueueRedraw();
 		}
 	}
 
-	/// <summary>旋转并把角度吸附到最近的 15° —— 「转正」用。</summary>
-	public void ResetSelectionRotation()
+	/// <summary>把角度归零 —— 「转正」用。</summary>
+	public void ResetObjectsRotation(IReadOnlyList<TabletopObject> targets)
 	{
-		foreach (TabletopObject obj in _selection)
+		foreach (TabletopObject obj in targets)
 		{
 			obj.RotationDeg = 0f;
 			obj.QueueRedraw();
 		}
 	}
 
-	public void DeleteSelection()
+	public void DeleteObjects(IReadOnlyList<TabletopObject> targets)
 	{
-		foreach (TabletopObject obj in _selection.ToArray())
+		foreach (TabletopObject obj in targets)
 		{
 			DetachFromPile(obj, keepPosition: true);
 			_drawOrder.Remove(obj);
+			_selection.Remove(obj);
+
+			// 被删掉的物件可能正是当前悬停对象，留着会变成悬空引用
+			if (ReferenceEquals(_hovered, obj))
+				_hovered = null;
+
 			obj.QueueFree();
 		}
 
-		_selection.Clear();
 		EmitSelectionChanged();
 		EmitSignal(SignalName.ObjectCountChanged, _drawOrder.Count);
 		ApplyDrawOrder();
 	}
 
-	/// <summary>复制选中物件，副本略微偏移（否则会跟原件完全重叠，看起来像没反应）。</summary>
-	public void DuplicateSelection()
+	/// <summary>复制物件，副本略微偏移（否则会跟原件完全重叠，看起来像没反应）。</summary>
+	public void DuplicateObjects(IReadOnlyList<TabletopObject> targets)
 	{
 		var copies = new List<TabletopObject>();
 		Vector2 offset = new(28f, 28f);
 
-		foreach (TabletopObject obj in _selection.ToArray())
+		foreach (TabletopObject obj in targets)
 		{
 			ObjectState state = obj.CaptureState();
 			state.Position += offset;
@@ -533,6 +605,18 @@ public partial class ObjectManager : Node2D, IWorldPicker, IWheelHandler
 
 		EmitSelectionChanged();
 	}
+
+	// ---- 以下四个是"作用于选中集"的版本，右键菜单用（菜单已把选中设成被点的那个）----
+
+	public void FlipSelection() => FlipObjects(_selection);
+
+	public void RotateSelection(float degrees) => RotateObjects(_selection, degrees);
+
+	public void ResetSelectionRotation() => ResetObjectsRotation(_selection);
+
+	public void DeleteSelection() => DeleteObjects(_selection.ToArray());
+
+	public void DuplicateSelection() => DuplicateObjects(_selection.ToArray());
 
 	/// <summary>按快照造一个物件（复制、读档、撤销都走这里）。</summary>
 	public TabletopObject? InstantiateFromState(ObjectState state)
@@ -994,32 +1078,38 @@ public partial class ObjectManager : Node2D, IWorldPicker, IWheelHandler
 		if (@event is not InputEventKey key || !key.Pressed || key.Echo)
 			return;
 
-		if (key.IsActionPressed("tt_flip") && _selection.Count > 0)
+		// 「悬停即为选中」：操作目标是"指着的那张"，没有悬停才退回选中集。
+		// 所以这里判断的是目标集是否为空，而不是选中集是否为空 ——
+		// 否则光是悬停一张卡、没点过任何东西时，按键会毫无反应。
+		bool actionable =
+			key.IsActionPressed("tt_flip") ||
+			key.IsActionPressed("tt_rotate_cw") ||
+			key.IsActionPressed("tt_rotate_ccw") ||
+			key.IsActionPressed("tt_duplicate") ||
+			key.IsActionPressed("tt_delete");
+
+		if (actionable)
 		{
-			FlipSelection();
-			GetViewport().SetInputAsHandled();
+			List<TabletopObject> targets = ResolveActionTargets();
+			if (targets.Count > 0)
+			{
+				if (key.IsActionPressed("tt_flip"))
+					FlipObjects(targets);
+				else if (key.IsActionPressed("tt_rotate_cw"))
+					RotateObjects(targets, GameConfig.KeyRotateStepDegrees);
+				else if (key.IsActionPressed("tt_rotate_ccw"))
+					RotateObjects(targets, -GameConfig.KeyRotateStepDegrees);
+				else if (key.IsActionPressed("tt_duplicate"))
+					DuplicateObjects(targets);
+				else if (key.IsActionPressed("tt_delete"))
+					DeleteObjects(targets);
+
+				GetViewport().SetInputAsHandled();
+				return;
+			}
 		}
-		else if (key.IsActionPressed("tt_rotate_cw") && _selection.Count > 0)
-		{
-			RotateSelection(GameConfig.KeyRotateStepDegrees);
-			GetViewport().SetInputAsHandled();
-		}
-		else if (key.IsActionPressed("tt_rotate_ccw") && _selection.Count > 0)
-		{
-			RotateSelection(-GameConfig.KeyRotateStepDegrees);
-			GetViewport().SetInputAsHandled();
-		}
-		else if (key.IsActionPressed("tt_duplicate") && _selection.Count > 0)
-		{
-			DuplicateSelection();
-			GetViewport().SetInputAsHandled();
-		}
-		else if (key.IsActionPressed("tt_delete") && _selection.Count > 0)
-		{
-			DeleteSelection();
-			GetViewport().SetInputAsHandled();
-		}
-		else if (key.IsActionPressed("tt_select_all"))
+
+		if (key.IsActionPressed("tt_select_all"))
 		{
 			SelectAll();
 			GetViewport().SetInputAsHandled();

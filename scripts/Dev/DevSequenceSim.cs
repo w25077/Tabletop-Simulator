@@ -23,6 +23,7 @@ internal static class DevSequenceSim
 		var r = new Godot.Collections.Dictionary();
 
 		await ClickThenBoxSelect(host, cam, objects, r);
+		await HoverIsTheTarget(host, cam, objects, r);
 		await RightClickMenu(host, cam, objects, r);
 		await MenuClampsAtEdge(host, cam, objects, r);
 		await ShiftExtractFromPile(host, cam, objects, r);
@@ -33,6 +34,7 @@ internal static class DevSequenceSim
 		// 而 SelectAllThenDuplicate 写的是 dup_ok，于是聚合判定永远 false，
 		// 明明五项子断言全绿却报失败。
 		r["pass"] = AsBool(r, "click_then_box_ok")
+			&& AsBool(r, "hover_target_ok")
 			&& AsBool(r, "menu_ok")
 			&& AsBool(r, "menu_edge_ok")
 			&& AsBool(r, "shift_extract_ok")
@@ -95,6 +97,90 @@ internal static class DevSequenceSim
 		r["click_then_box_selected"] = objects.Selection.Count;
 		r["click_then_box_card_moved"] = card.Position.DistanceTo(before);
 		r["click_then_box_ok"] = objects.Selection.Count > 0 && card.Position.DistanceTo(before) < 0.01f;
+	}
+
+	// ------------------------------------------------------------------ 顺序 1b
+
+	/// <summary>
+	/// 用户反馈的原场景：先点选 A，再把鼠标移到 B 上（<b>不点击</b>），按 F。
+	/// 期望 B 翻面、A 不动 —— 「悬停即为选中」。
+	///
+	/// 顺带断言描边标志：B 应是操作目标，A 不是。否则会出现
+	/// "描边说会改这张、实际改的是另一张"。
+	/// </summary>
+	private static async Task HoverIsTheTarget(Node host, BoardCamera cam, ObjectManager objects, Godot.Collections.Dictionary r)
+	{
+		(CardObject? a, CardObject? b) = FindTwoSeparateCards(objects, cam);
+		if (a is null || b is null)
+		{
+			r["hover_target_ok"] = false;
+			r["hover_target_note"] = "找不到两张互不重叠、都在屏幕内的正面卡";
+			return;
+		}
+
+		// 1) 点选 A
+		Vector2 aScreen = cam.WorldToScreen(a.Position);
+		DevInputSim.PushButton(aScreen, MouseButton.Left, true);
+		await DevInputSim.Frame(host);
+		DevInputSim.PushButton(aScreen, MouseButton.Left, false);
+		await DevInputSim.Frame(host);
+		await DevInputSim.Frame(host);
+
+		bool aFaceBefore = a.IsFaceDown;
+		bool bFaceBefore = b.IsFaceDown;
+
+		r["hover_target_a_selected"] = a.IsSelected;
+		r["hover_target_selection_count"] = objects.Selection.Count;
+
+		// 2) 只移动鼠标到 B 上，不点击
+		Vector2 bScreen = cam.WorldToScreen(b.Position);
+		DevInputSim.PushMotion(bScreen, bScreen - aScreen);
+		await DevInputSim.Frame(host);
+		await DevInputSim.Frame(host);
+
+		r["hover_target_hovered_uid"] = objects.Hovered?.Uid ?? "(null)";
+		r["hover_target_b_is_target"] = b.IsActionTarget;
+		r["hover_target_a_is_target"] = a.IsActionTarget;
+
+		// 3) 按 F
+		DevInputSim.PushKey(Key.F);
+		await DevInputSim.Frame(host);
+		await DevInputSim.Frame(host);
+
+		bool aFlipped = a.IsFaceDown != aFaceBefore;
+		bool bFlipped = b.IsFaceDown != bFaceBefore;
+
+		r["hover_target_a_flipped"] = aFlipped;
+		r["hover_target_b_flipped"] = bFlipped;
+		r["hover_target_ok"] = !aFlipped && bFlipped && b.IsActionTarget && !a.IsActionTarget;
+	}
+
+	/// <summary>挑两张互不重叠、都在屏幕内的正面卡：各自位置上的最上层物件必须就是它自己。</summary>
+	private static (CardObject?, CardObject?) FindTwoSeparateCards(ObjectManager objects, BoardCamera cam)
+	{
+		var candidates = new List<CardObject>();
+
+		foreach (TabletopObject obj in objects.AllObjects)
+		{
+			if (obj is CardObject card && card.Visible && !card.IsFaceDown
+				&& DevInputSim.IsOnScreen(cam, card.Position)
+				&& ReferenceEquals(objects.PickTopmost(card.Position), card))
+			{
+				candidates.Add(card);
+			}
+		}
+
+		for (int i = 0; i < candidates.Count; i++)
+		{
+			for (int j = i + 1; j < candidates.Count; j++)
+			{
+				// 距离要够远，免得鼠标移到 B 上时其实还压在 A 的范围内
+				if (candidates[i].Position.DistanceTo(candidates[j].Position) > 60f)
+					return (candidates[i], candidates[j]);
+			}
+		}
+
+		return (null, null);
 	}
 
 	// ------------------------------------------------------------------ 顺序 2

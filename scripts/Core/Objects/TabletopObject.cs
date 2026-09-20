@@ -37,6 +37,13 @@ public abstract partial class TabletopObject : Node2D
 	public bool IsSelected { get; set; }
 	public bool IsHovered { get; set; }
 
+	/// <summary>
+	/// 是否是下一次键盘/滚轮操作的落点。
+	/// 由 <see cref="ObjectManager"/> 统一计算（悬停优先，其次选中集），
+	/// 物件自己只负责按这个标志画描边 —— 单一真相，避免各处各自推断。
+	/// </summary>
+	public bool IsActionTarget { get; set; }
+
 	/// <summary>本地矩形，原点在中心。</summary>
 	public Rect2 LocalRect => new(-Size * 0.5f, Size);
 
@@ -62,10 +69,12 @@ public abstract partial class TabletopObject : Node2D
 	{
 		DrawContent();
 
-		if (IsSelected)
-			DrawOutline(GameConfig.SelectionOutline, 5f);
-		else if (IsHovered)
-			DrawOutline(GameConfig.HoverOutline, 3f);
+		// 描边只表达一件事：会不会被下一次操作改到。
+		// 亮黄 = 会；暗黄 = 在选中集里但当前不是目标。
+		if (IsActionTarget)
+			DrawOutline(GameConfig.ActionTargetOutline, 6f);
+		else if (IsSelected)
+			DrawOutline(GameConfig.PassiveSelectionOutline, 4f);
 
 		DrawPileBadge();
 	}
