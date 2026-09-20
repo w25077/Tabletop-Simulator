@@ -1,0 +1,26 @@
+# Godot 4+ 自动生成的导入缓存与编辑器状态。
+# 这个目录体积大且完全可由 .tscn / .tres 重新生成，绝不提交。
+.godot/
+
+# Godot 的 Android 构建产物
+/android/
+
+# 导出预设。可能内含签名证书路径与密码，默认不提交。
+# 如果哪天要复现导出流程，再单独评估要不要放进来。
+export_presets.cfg
+
+# ---- .NET / C# ----
+bin/
+obj/
+*.user
+.vs/
+.idea/
+
+# ---- 开发期产物 ----
+# 截图自检的输出（tools/dev/shot.ps1 生成）
+.dev/
+
+# ---- MCP 插件的自更新备份缓存 ----
+# 注意：只忽略备份缓存，addons/godot_ai/ 插件本体是提交的。
+# 这个目录是插件每次更新前对自己做的整目录备份，5.5 MB / 287 个文件，纯冗余。
+/addons/.godot_ai_update/

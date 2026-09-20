@@ -1,0 +1,16 @@
+<Project Sdk="Godot.NET.Sdk/4.7.2">
+  <PropertyGroup>
+    <TargetFramework>net8.0</TargetFramework>
+    <EnableDynamicLoading>true</EnableDynamicLoading>
+    <RootNamespace>TabletopSimulator</RootNamespace>
+    <Nullable>enable</Nullable>
+    <LangVersion>12</LangVersion>
+    <ImplicitUsings>disable</ImplicitUsings>
+    <AssemblyName>TabletopSimulator</AssemblyName>
+    <!-- Godot's source generators emit code that trips a few nullable analyzers; keep them quiet
+         without giving up nullable checking on hand-written code. -->
+    <NoWarn>$(NoWarn);CS8618;CS8625;CS1591</NoWarn>
+    <!-- Offline machine: silence NuGet audit warnings when nuget.org is unreachable. -->
+    <NuGetAudit>false</NuGetAudit>
+  </PropertyGroup>
+</Project>

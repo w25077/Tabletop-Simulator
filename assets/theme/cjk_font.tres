@@ -1,0 +1,14 @@
+[gd_resource type="SystemFont" format=3]
+
+; 中文字体来源。Godot 自带的 Open Sans 不含 CJK 字形，界面中文会变方块。
+; SystemFont 按名字向操作系统要字体：优先微软雅黑，找不到就依次往下试，
+; 最后由 allow_system_fallback 兜底（任何系统字体里有这个字形就用它）。
+; 好处是工程里不塞字体文件，也不涉及字体分发授权问题。
+;
+; 如果哪天要发布给别人用，把这里换成嵌入的 FontFile 资源即可，
+; 代码里只认 Fonts.FontResourcePath 这一个常量。
+
+[resource]
+font_names = PackedStringArray("Microsoft YaHei UI", "Microsoft YaHei", "SimHei", "Noto Sans CJK SC", "Source Han Sans SC", "PingFang SC", "Sans-Serif")
+allow_system_fallback = true
+subpixel_positioning = 1

@@ -1,0 +1,104 @@
+[gd_scene format=3 uid="uid://b8g46agfasefb"]
+
+[ext_resource type="Script" uid="uid://psllxur8mcjw" path="res://scripts/Core/Main.cs" id="1_vcsgt"]
+[ext_resource type="Script" uid="uid://esk0y86nlg8x" path="res://scripts/Core/Board.cs" id="2_c01mt"]
+[ext_resource type="Script" uid="uid://c65ay6nhhxqlj" path="res://scripts/Core/ViewportController.cs" id="3_nxtc6"]
+[ext_resource type="Script" uid="uid://bre7plwfogddk" path="res://scripts/Core/BoardCamera.cs" id="4_jlsqs"]
+[ext_resource type="Script" uid="uid://bge8crumss7xg" path="res://scripts/Core/Hud.cs" id="5_q8u5g"]
+[ext_resource type="Script" uid="uid://s01b5hi5cg0t" path="res://scripts/Dev/DevCapture.cs" id="6_c01mt"]
+
+[node name="Main" type="Node2D" unique_id=1146469549]
+script = ExtResource("1_vcsgt")
+
+[node name="Board" type="Node2D" parent="." unique_id=979557178]
+script = ExtResource("2_c01mt")
+
+[node name="Zones" type="Node2D" parent="." unique_id=1928231685]
+z_index = -500
+
+[node name="Objects" type="Node2D" parent="." unique_id=1885439419]
+
+[node name="ViewportController" type="Node" parent="." unique_id=1095945218]
+script = ExtResource("3_nxtc6")
+
+[node name="Camera2D" type="Camera2D" parent="." unique_id=853316051]
+script = ExtResource("4_jlsqs")
+
+[node name="HUD" type="CanvasLayer" parent="." unique_id=1790820134]
+layer = 10
+script = ExtResource("5_q8u5g")
+
+[node name="HudRoot" type="Control" parent="HUD" unique_id=1632908285]
+layout_mode = 3
+anchors_preset = 15
+anchor_right = 1.0
+anchor_bottom = 1.0
+mouse_filter = 2
+
+[node name="Layout" type="VBoxContainer" parent="HUD/HudRoot" unique_id=1708655884]
+layout_mode = 0
+anchor_right = 1.0
+anchor_bottom = 1.0
+mouse_filter = 2
+theme_override_constants/separation = 6
+
+[node name="TopBar" type="PanelContainer" parent="HUD/HudRoot/Layout" unique_id=1607525615]
+layout_mode = 2
+
+[node name="TopRow" type="HBoxContainer" parent="HUD/HudRoot/Layout/TopBar" unique_id=1122107551]
+layout_mode = 2
+theme_override_constants/separation = 14
+
+[node name="SaveNameLabel" type="Label" parent="HUD/HudRoot/Layout/TopBar/TopRow" unique_id=1149548773]
+layout_mode = 2
+text = "未命名存档"
+vertical_alignment = 1
+
+[node name="Sep1" type="VSeparator" parent="HUD/HudRoot/Layout/TopBar/TopRow" unique_id=2049328824]
+layout_mode = 2
+
+[node name="ZoomLabel" type="Label" parent="HUD/HudRoot/Layout/TopBar/TopRow" unique_id=369055497]
+layout_mode = 2
+text = "缩放 100%"
+vertical_alignment = 1
+
+[node name="Sep2" type="VSeparator" parent="HUD/HudRoot/Layout/TopBar/TopRow" unique_id=1236181731]
+layout_mode = 2
+
+[node name="ObjectLabel" type="Label" parent="HUD/HudRoot/Layout/TopBar/TopRow" unique_id=198221150]
+layout_mode = 2
+text = "物件 0"
+vertical_alignment = 1
+
+[node name="Spacer" type="Control" parent="HUD/HudRoot/Layout/TopBar/TopRow" unique_id=2064144211]
+layout_mode = 2
+size_flags_horizontal = 3
+mouse_filter = 2
+
+[node name="FitButton" type="Button" parent="HUD/HudRoot/Layout/TopBar/TopRow" unique_id=1453752673]
+layout_mode = 2
+text = "适配桌面"
+
+[node name="Zoom100Button" type="Button" parent="HUD/HudRoot/Layout/TopBar/TopRow" unique_id=1514366827]
+layout_mode = 2
+text = "100%"
+
+[node name="MidSpacer" type="Control" parent="HUD/HudRoot/Layout" unique_id=990097590]
+layout_mode = 2
+size_flags_vertical = 3
+mouse_filter = 2
+
+[node name="ToastLabel" type="Label" parent="HUD/HudRoot/Layout" unique_id=240275491]
+layout_mode = 2
+horizontal_alignment = 1
+
+[node name="HintBar" type="PanelContainer" parent="HUD/HudRoot/Layout" unique_id=1219822046]
+layout_mode = 2
+
+[node name="HintLabel" type="Label" parent="HUD/HudRoot/Layout/HintBar" unique_id=1873537382]
+layout_mode = 2
+text = "滚轮 缩放　·　中键 / 右键拖拽 平移　·　空格+左键拖拽 平移　·　Home 适配桌面　·　Ctrl+Home 复位到 100%"
+horizontal_alignment = 1
+
+[node name="DevCapture" type="Node" parent="." unique_id=118026493]
+script = ExtResource("6_c01mt")
