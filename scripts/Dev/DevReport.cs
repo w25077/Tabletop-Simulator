@@ -127,6 +127,12 @@ internal static class DevReport
 
 			Color sampled = DominantColor(frame, inner);
 			float distance = ColorDistance(expected, sampled);
+
+			// 光看主色是不够的：就算文字/图案一个像素都没画出来，
+			// 主色依然是填充色，断言照样通过。所以要单独统计"非填充色像素占比"，
+			// 用它来证明卡面上确实有东西被画上去了。
+			(float nonFillRatio, int distinctColors) = NonFillStats(frame, inner, expected);
+
 			bool ok = distance < 0.08f;
 
 			items.Add(new Godot.Collections.Dictionary
@@ -141,6 +147,9 @@ internal static class DevReport
 				["expected_hex"] = expected.ToHtml(true),
 				["sampled_hex"] = sampled.ToHtml(true),
 				["distance"] = distance,
+				["non_fill_ratio"] = nonFillRatio,
+				["distinct_colors"] = distinctColors,
+				["content_ok"] = nonFillRatio > 0.01f,
 				["ok"] = ok,
 			});
 
@@ -218,6 +227,38 @@ internal static class DevReport
 			(byte)((best >> 16) & 0xFF),
 			(byte)((best >> 8) & 0xFF),
 			(byte)(best & 0xFF));
+	}
+
+	/// <summary>
+	/// 统计区域内"与填充色明显不同"的像素占比，以及出现过的不同颜色数。
+	/// 用途：证明卡面上确实画了东西（文字 / 卡背纹样 / 骰子数字），
+	/// 因为主色断言对"什么都没画"和"画得很好"是区分不出来的。
+	/// </summary>
+	private static (float Ratio, int Distinct) NonFillStats(Image img, Rect2 region, Color fill)
+	{
+		int x0 = Mathf.Max(Mathf.RoundToInt(region.Position.X), 0);
+		int y0 = Mathf.Max(Mathf.RoundToInt(region.Position.Y), 0);
+		int x1 = Mathf.Min(Mathf.RoundToInt(region.End.X), img.GetWidth());
+		int y1 = Mathf.Min(Mathf.RoundToInt(region.End.Y), img.GetHeight());
+
+		var seen = new System.Collections.Generic.HashSet<uint>();
+		int total = 0;
+		int nonFill = 0;
+
+		for (int y = y0; y < y1; y++)
+		{
+			for (int x = x0; x < x1; x++)
+			{
+				Color c = img.GetPixel(x, y);
+				seen.Add(c.ToRgba32());
+				total++;
+
+				if (ColorDistance(c, fill) > 0.04f)
+					nonFill++;
+			}
+		}
+
+		return (total > 0 ? (float)nonFill / total : 0f, seen.Count);
 	}
 
 	/// <summary>归一化 RGB 距离（0 = 完全相同，1 = 最远）。</summary>
