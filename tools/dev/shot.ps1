@@ -36,14 +36,32 @@ foreach ($suffix in @("", ".meta.json", ".report.json")) {
 # Resolve the Godot .NET (mono) console executable:
 #   1. -GodotExe parameter   2. TT_GODOT_EXE env var   3. auto-detect
 # The standard (non-mono) build cannot run C#, so we specifically want mono.
+#
+# Auto-detection deliberately has NO hard-coded machine paths: it looks on PATH
+# first, then at the usual install roots, then at the Steam library folder on
+# *every* filesystem drive. Point TT_GODOT_EXE at your install if it lives
+# somewhere unusual.
+if (-not $GodotExe) {
+    $onPath = Get-Command "Godot*mono*console*.exe" -ErrorAction SilentlyContinue |
+        Select-Object -First 1
+    if ($onPath) { $GodotExe = $onPath.Source }
+}
+
 if (-not $GodotExe) {
     $searchDirs = @(
-        "D:\SteamLibrary\steamapps\common\Godot Engine",
-        "C:\Program Files\Godot",
+        (Join-Path $env:ProgramFiles "Godot"),
+        (Join-Path ${env:ProgramFiles(x86)} "Godot"),
         (Join-Path $env:LOCALAPPDATA "Programs\Godot")
     )
+
+    foreach ($drive in (Get-PSDrive -PSProvider FileSystem -ErrorAction SilentlyContinue)) {
+        if ($drive.Root) {
+            $searchDirs += (Join-Path $drive.Root "SteamLibrary\steamapps\common\Godot Engine")
+        }
+    }
+
     foreach ($dir in $searchDirs) {
-        if (-not (Test-Path $dir)) { continue }
+        if (-not $dir -or -not (Test-Path $dir)) { continue }
         $found = Get-ChildItem $dir -Filter "*mono*console*.exe" -File -ErrorAction SilentlyContinue |
             Select-Object -First 1
         if ($found) { $GodotExe = $found.FullName; break }
