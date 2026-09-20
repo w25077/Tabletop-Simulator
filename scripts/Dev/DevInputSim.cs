@@ -14,10 +14,10 @@ namespace TabletopSimulator.Dev;
 /// </summary>
 internal static class DevInputSim
 {
-	private static async Task Frame(Node host) =>
+	internal static async Task Frame(Node host) =>
 		await host.ToSignal(host.GetTree(), SceneTree.SignalName.ProcessFrame);
 
-	private static void PushButton(Vector2 pos, MouseButton button, bool pressed)
+	internal static void PushButton(Vector2 pos, MouseButton button, bool pressed)
 	{
 		Input.ParseInputEvent(new InputEventMouseButton
 		{
@@ -28,14 +28,14 @@ internal static class DevInputSim
 		});
 	}
 
-	private static void PushWheel(Vector2 pos, bool up)
+	internal static void PushWheel(Vector2 pos, bool up)
 	{
 		MouseButton button = up ? MouseButton.WheelUp : MouseButton.WheelDown;
 		PushButton(pos, button, true);
 		PushButton(pos, button, false);
 	}
 
-	private static void PushMotion(Vector2 pos, Vector2 relative)
+	internal static void PushMotion(Vector2 pos, Vector2 relative)
 	{
 		Input.ParseInputEvent(new InputEventMouseMotion
 		{
@@ -45,12 +45,94 @@ internal static class DevInputSim
 		});
 	}
 
+	/// <summary>合成一次按键。只设 Keycode —— InputMap 里登记的也是 keycode，设 physical 反而可能不匹配。</summary>
+	internal static void PushKey(Key key)
+	{
+		Input.ParseInputEvent(new InputEventKey { Keycode = key, Pressed = true });
+		Input.ParseInputEvent(new InputEventKey { Keycode = key, Pressed = false });
+	}
+
+	/// <summary>
+	/// 找一块真正空着的屏幕点。
+	/// 测试里<b>绝不能写死坐标</b> —— 桌面内容一变，写死的点就可能压在卡上，
+	/// 于是"点空白"根本没发生，断言假失败（这个坑 M2 第一版就踩了）。
+	/// </summary>
+	internal static Vector2 FindEmptyScreenPoint(BoardCamera cam, Core.Objects.ObjectManager objects)
+	{
+		Vector2 viewport = cam.GetViewportRect().Size;
+
+		// 从靠边的位置往中间扫，优先拿到远离物件的点
+		for (float ty = 0.88f; ty >= 0.2f; ty -= 0.08f)
+		{
+			for (float tx = 0.08f; tx <= 0.92f; tx += 0.06f)
+			{
+				var screen = new Vector2(viewport.X * tx, viewport.Y * ty);
+				Vector2 world = cam.ScreenToWorld(screen);
+
+				if (objects.PickTopmost(world) is not null)
+					continue;
+
+				// 半径内也没有物件才算"真空"（拖过去不会意外堆叠）
+				if (HasObjectNear(objects, world, 520f))
+					continue;
+
+				return screen;
+			}
+		}
+
+		return new Vector2(viewport.X * 0.5f, viewport.Y * 0.92f);
+	}
+
+	internal static bool HasObjectNear(Core.Objects.ObjectManager objects, Vector2 world, float radius)
+	{
+		foreach (Core.Objects.TabletopObject obj in objects.AllObjects)
+		{
+			if (!obj.Visible)
+				continue;
+
+			if (obj.GetWorldAabb().Grow(radius).HasPoint(world))
+				return true;
+		}
+
+		return false;
+	}
+
+	/// <summary>
+	/// 在某个屏幕点附近找一块空位。框选测试要"起点在空白"才能触发框选，
+	/// 同时又得离目标卡够近，框才罩得住它。
+	/// </summary>
+	internal static Vector2? FindEmptyScreenPointNear(
+		BoardCamera cam, Core.Objects.ObjectManager objects, Vector2 nearScreen, float maxRadius)
+	{
+		Vector2 viewport = cam.GetViewportRect().Size;
+
+		for (float radius = 90f; radius <= maxRadius; radius += 55f)
+		{
+			const int Steps = 20;
+			for (int i = 0; i < Steps; i++)
+			{
+				float angle = Mathf.Tau * i / Steps;
+				Vector2 screen = nearScreen + (new Vector2(Mathf.Cos(angle), Mathf.Sin(angle)) * radius);
+
+				// 避开顶栏与底部提示条 —— 那些区域会被 HUD 控件吃掉
+				if (screen.X < 24f || screen.X > viewport.X - 24f ||
+					screen.Y < 56f || screen.Y > viewport.Y - 110f)
+					continue;
+
+				if (objects.PickTopmost(cam.ScreenToWorld(screen)) is null)
+					return screen;
+			}
+		}
+
+		return null;
+	}
+
 	/// <summary>
 	/// 依次验证：滚轮缩放（含锚点不跑偏）、中键拖拽平移、左键点空白、右键轻点出菜单。
 	/// 全部读完相机<b>目标值</b>而不是当前值 —— 平滑会让当前值滞后，判定会假阴性。
 	/// </summary>
 	internal static async Task<Godot.Collections.Dictionary> CameraAndPointerProbe(
-		Node host, BoardCamera cam, ViewportController vc)
+		Node host, BoardCamera cam, ViewportController vc, Core.Objects.ObjectManager? objects = null)
 	{
 		var r = new Godot.Collections.Dictionary();
 
@@ -106,7 +188,13 @@ internal static class DevInputSim
 		vc.EmptyAreaClicked += _ => emptyClicks++;
 		vc.ContextMenuRequested += _ => contextMenus++;
 
-		var clickAt = new Vector2(700f, 400f);
+		// 空白点必须动态找 —— 写死坐标在桌面有内容之后就会假失败
+		Vector2 clickAt = objects is not null
+			? FindEmptyScreenPoint(cam, objects)
+			: new Vector2(700f, 400f);
+
+		r["empty_click_screen"] = new Godot.Collections.Array { clickAt.X, clickAt.Y };
+
 		PushButton(clickAt, MouseButton.Left, true);
 		await Frame(host);
 		PushButton(clickAt, MouseButton.Left, false);

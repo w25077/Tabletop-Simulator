@@ -2,8 +2,10 @@
 
 [ext_resource type="Script" uid="uid://psllxur8mcjw" path="res://scripts/Core/Main.cs" id="1_vcsgt"]
 [ext_resource type="Script" uid="uid://esk0y86nlg8x" path="res://scripts/Core/Board.cs" id="2_c01mt"]
+[ext_resource type="Script" uid="uid://cc0utm6p5dlo0" path="res://scripts/Core/Objects/ObjectManager.cs" id="3_jlsqs"]
 [ext_resource type="Script" uid="uid://c65ay6nhhxqlj" path="res://scripts/Core/ViewportController.cs" id="3_nxtc6"]
 [ext_resource type="Script" uid="uid://bre7plwfogddk" path="res://scripts/Core/BoardCamera.cs" id="4_jlsqs"]
+[ext_resource type="Script" uid="uid://c03lmrjhm5r31" path="res://scripts/Core/Objects/SelectionBox.cs" id="4_q8u5g"]
 [ext_resource type="Script" uid="uid://bge8crumss7xg" path="res://scripts/Core/Hud.cs" id="5_q8u5g"]
 [ext_resource type="Script" uid="uid://s01b5hi5cg0t" path="res://scripts/Dev/DevCapture.cs" id="6_c01mt"]
 
@@ -17,6 +19,10 @@ script = ExtResource("2_c01mt")
 z_index = -500
 
 [node name="Objects" type="Node2D" parent="." unique_id=1885439419]
+script = ExtResource("3_jlsqs")
+
+[node name="SelectionBox" type="Node2D" parent="." unique_id=1210857420]
+script = ExtResource("4_q8u5g")
 
 [node name="ViewportController" type="Node" parent="." unique_id=1095945218]
 script = ExtResource("3_nxtc6")
@@ -28,76 +34,86 @@ script = ExtResource("4_jlsqs")
 layer = 10
 script = ExtResource("5_q8u5g")
 
-[node name="HudRoot" type="Control" parent="HUD" unique_id=1632908285]
+[node name="HudRoot" type="Control" parent="HUD" unique_id=555082889]
 layout_mode = 3
 anchors_preset = 15
 anchor_right = 1.0
 anchor_bottom = 1.0
 mouse_filter = 2
 
-[node name="Layout" type="VBoxContainer" parent="HUD/HudRoot" unique_id=1708655884]
+[node name="Layout" type="VBoxContainer" parent="HUD/HudRoot" unique_id=2041031198]
 layout_mode = 0
 anchor_right = 1.0
 anchor_bottom = 1.0
 mouse_filter = 2
 theme_override_constants/separation = 6
 
-[node name="TopBar" type="PanelContainer" parent="HUD/HudRoot/Layout" unique_id=1607525615]
+[node name="TopBar" type="PanelContainer" parent="HUD/HudRoot/Layout" unique_id=878700222]
 layout_mode = 2
 
-[node name="TopRow" type="HBoxContainer" parent="HUD/HudRoot/Layout/TopBar" unique_id=1122107551]
+[node name="TopRow" type="HBoxContainer" parent="HUD/HudRoot/Layout/TopBar" unique_id=1999120423]
 layout_mode = 2
 theme_override_constants/separation = 14
 
-[node name="SaveNameLabel" type="Label" parent="HUD/HudRoot/Layout/TopBar/TopRow" unique_id=1149548773]
+[node name="SaveNameLabel" type="Label" parent="HUD/HudRoot/Layout/TopBar/TopRow" unique_id=1221094329]
 layout_mode = 2
 text = "未命名存档"
 vertical_alignment = 1
 
-[node name="Sep1" type="VSeparator" parent="HUD/HudRoot/Layout/TopBar/TopRow" unique_id=2049328824]
+[node name="Sep1" type="VSeparator" parent="HUD/HudRoot/Layout/TopBar/TopRow" unique_id=358067391]
 layout_mode = 2
 
-[node name="ZoomLabel" type="Label" parent="HUD/HudRoot/Layout/TopBar/TopRow" unique_id=369055497]
+[node name="ZoomLabel" type="Label" parent="HUD/HudRoot/Layout/TopBar/TopRow" unique_id=208744865]
 layout_mode = 2
 text = "缩放 100%"
 vertical_alignment = 1
 
-[node name="Sep2" type="VSeparator" parent="HUD/HudRoot/Layout/TopBar/TopRow" unique_id=1236181731]
+[node name="Sep2" type="VSeparator" parent="HUD/HudRoot/Layout/TopBar/TopRow" unique_id=705804469]
 layout_mode = 2
 
-[node name="ObjectLabel" type="Label" parent="HUD/HudRoot/Layout/TopBar/TopRow" unique_id=198221150]
+[node name="ObjectLabel" type="Label" parent="HUD/HudRoot/Layout/TopBar/TopRow" unique_id=386697332]
 layout_mode = 2
 text = "物件 0"
 vertical_alignment = 1
 
-[node name="Spacer" type="Control" parent="HUD/HudRoot/Layout/TopBar/TopRow" unique_id=2064144211]
+[node name="SelectionLabel" type="Label" parent="HUD/HudRoot/Layout/TopBar/TopRow" unique_id=1931858945]
+layout_mode = 2
+text = "选中 0"
+vertical_alignment = 1
+
+[node name="Spacer" type="Control" parent="HUD/HudRoot/Layout/TopBar/TopRow" unique_id=383177900]
 layout_mode = 2
 size_flags_horizontal = 3
 mouse_filter = 2
 
-[node name="FitButton" type="Button" parent="HUD/HudRoot/Layout/TopBar/TopRow" unique_id=1453752673]
+[node name="GridSnapButton" type="Button" parent="HUD/HudRoot/Layout/TopBar/TopRow" unique_id=1858726839]
+layout_mode = 2
+toggle_mode = true
+text = "网格吸附：关"
+
+[node name="FitButton" type="Button" parent="HUD/HudRoot/Layout/TopBar/TopRow" unique_id=2011426134]
 layout_mode = 2
 text = "适配桌面"
 
-[node name="Zoom100Button" type="Button" parent="HUD/HudRoot/Layout/TopBar/TopRow" unique_id=1514366827]
+[node name="Zoom100Button" type="Button" parent="HUD/HudRoot/Layout/TopBar/TopRow" unique_id=1937497876]
 layout_mode = 2
 text = "100%"
 
-[node name="MidSpacer" type="Control" parent="HUD/HudRoot/Layout" unique_id=990097590]
+[node name="MidSpacer" type="Control" parent="HUD/HudRoot/Layout" unique_id=234697471]
 layout_mode = 2
 size_flags_vertical = 3
 mouse_filter = 2
 
-[node name="ToastLabel" type="Label" parent="HUD/HudRoot/Layout" unique_id=240275491]
+[node name="ToastLabel" type="Label" parent="HUD/HudRoot/Layout" unique_id=1080634715]
 layout_mode = 2
 horizontal_alignment = 1
 
-[node name="HintBar" type="PanelContainer" parent="HUD/HudRoot/Layout" unique_id=1219822046]
+[node name="HintBar" type="PanelContainer" parent="HUD/HudRoot/Layout" unique_id=937981451]
 layout_mode = 2
 
-[node name="HintLabel" type="Label" parent="HUD/HudRoot/Layout/HintBar" unique_id=1873537382]
+[node name="HintLabel" type="Label" parent="HUD/HudRoot/Layout/HintBar" unique_id=1746742145]
 layout_mode = 2
-text = "滚轮 缩放　·　中键 / 右键拖拽 平移　·　空格+左键拖拽 平移　·　Home 适配桌面　·　Ctrl+Home 复位到 100%"
+text = "滚轮 缩放　·　中键/右键/空格+左键 平移　·　左键拖 移物 / 空白拖 框选　·　Shift+拖 从堆中抽单张　·　F 翻面　·　[ ] 旋转 15°　·　Alt+滚轮 微旋　·　G 网格吸附　·　Ctrl+D 复制　·　Del 删除　·　Home 适配桌面"
 horizontal_alignment = 1
 
 [node name="DevCapture" type="Node" parent="." unique_id=118026493]

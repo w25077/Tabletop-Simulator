@@ -33,8 +33,3 @@ obj/
 # 只忽略 Godot AI MCP 插件的自更新备份缓存，addons/godot_ai/ 插件本体是提交的。
 # 这个目录是插件每次更新前对自己做的整目录备份，约 5.5 MB / 287 个文件，纯冗余。
 /addons/.godot_ai_update/
-
-# ---- 误放在项目内的独立 git 仓库 ----
-# 曾经有个本地新建的空仓库被放在这里，会污染外层仓库（被记成 gitlink）。
-# 保留这条规则兜底，避免同类误操作再次发生。
-/Tabletop Simulator/

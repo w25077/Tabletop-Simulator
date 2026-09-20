@@ -2,6 +2,7 @@ using System.Text;
 using System.Threading.Tasks;
 using Godot;
 using TabletopSimulator.Core;
+using TabletopSimulator.Core.Objects;
 
 namespace TabletopSimulator.Dev;
 
@@ -76,7 +77,12 @@ public partial class DevCapture : Node
 		if (main?.GetNodeOrNull("Camera2D") is BoardCamera cam &&
 			main.GetNodeOrNull("ViewportController") is ViewportController vc)
 		{
-			report["input_simulation"] = await DevInputSim.CameraAndPointerProbe(this, cam, vc);
+			ObjectManager? objects = main.GetNodeOrNull<ObjectManager>("Objects");
+
+			report["input_simulation"] = await DevInputSim.CameraAndPointerProbe(this, cam, vc, objects);
+
+			if (objects is not null)
+				report["object_simulation"] = await DevObjectSim.Probe(this, cam, vc, objects);
 		}
 		else
 		{

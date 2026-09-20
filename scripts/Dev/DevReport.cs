@@ -1,5 +1,6 @@
 using Godot;
 using TabletopSimulator.Core;
+using TabletopSimulator.Core.Objects;
 
 namespace TabletopSimulator.Dev;
 
@@ -58,6 +59,8 @@ internal static class DevReport
 			"HUD/HudRoot/Layout/TopBar/TopRow/SaveNameLabel",
 			"HUD/HudRoot/Layout/TopBar/TopRow/ZoomLabel",
 			"HUD/HudRoot/Layout/TopBar/TopRow/ObjectLabel",
+			"HUD/HudRoot/Layout/TopBar/TopRow/SelectionLabel",
+			"HUD/HudRoot/Layout/TopBar/TopRow/GridSnapButton",
 			"HUD/HudRoot/Layout/TopBar/TopRow/FitButton",
 			"HUD/HudRoot/Layout/TopBar/TopRow/Zoom100Button",
 			"HUD/HudRoot/Layout/HintBar/HintLabel",
@@ -65,11 +68,114 @@ internal static class DevReport
 		});
 
 		report["regions"] = RegionProbe(frame, vpSize);
+		report["objects"] = ObjectProbe(main);
 
 		if (main.GetNodeOrNull("Camera2D") is BoardCamera cam)
 			report["camera_anchor_invariant"] = CameraAnchorProbe(cam);
 
 		return report;
+	}
+
+	// ------------------------------------------------------------------ 物件
+
+	/// <summary>
+	/// 桌面物件的结构快照：类型分布、堆叠情况、以及每个物件的关键状态。
+	/// 物件的<b>行为</b>由 DevObjectSim 用合成输入验证；这里只回答"桌上有什么、在哪、什么状态"。
+	/// </summary>
+	private static Godot.Collections.Dictionary ObjectProbe(Node main)
+	{
+		ObjectManager? objects = main.GetNodeOrNull<ObjectManager>("Objects");
+		if (objects is null)
+			return new Godot.Collections.Dictionary { ["found"] = false };
+
+		int cards = 0;
+		int tokens = 0;
+		int dice = 0;
+		int faceDown = 0;
+		int inPiles = 0;
+
+		var list = new Godot.Collections.Array();
+		int emitted = 0;
+
+		foreach (TabletopObject obj in objects.AllObjects)
+		{
+			switch (obj.Kind)
+			{
+				case Data.ObjectKind.Card: cards++; break;
+				case Data.ObjectKind.Token: tokens++; break;
+				case Data.ObjectKind.Dice: dice++; break;
+			}
+
+			if (obj.IsFaceDown)
+				faceDown++;
+
+			if (obj.PileId != 0)
+				inPiles++;
+
+			// 报告别无限膨胀：只列前 48 个
+			if (emitted < 48)
+			{
+				var entry = new Godot.Collections.Dictionary
+				{
+					["uid"] = obj.Uid,
+					["kind"] = obj.Kind.ToString(),
+					["pos"] = new Godot.Collections.Array { obj.Position.X, obj.Position.Y },
+					["rot"] = obj.RotationDeg,
+					["face_down"] = obj.IsFaceDown,
+					["pile_id"] = obj.PileId,
+					["pile_index"] = obj.PileIndex,
+					["pile_count"] = obj.PileCount,
+					["visible"] = obj.Visible,
+				};
+
+				if (obj is DiceObject d)
+				{
+					entry["dice_sides"] = d.Sides;
+					entry["dice_count"] = d.Count;
+					entry["dice_values"] = ToArray(d.Values);
+					entry["dice_rolling"] = d.IsRolling;
+				}
+
+				list.Add(entry);
+				emitted++;
+			}
+		}
+
+		var pileInfo = new Godot.Collections.Array();
+		foreach (System.Collections.Generic.KeyValuePair<int, Pile> kv in objects.Piles)
+		{
+			pileInfo.Add(new Godot.Collections.Dictionary
+			{
+				["id"] = kv.Key,
+				["count"] = kv.Value.Count,
+				["anchor"] = new Godot.Collections.Array { kv.Value.Anchor.X, kv.Value.Anchor.Y },
+			});
+		}
+
+		return new Godot.Collections.Dictionary
+		{
+			["found"] = true,
+			["count"] = objects.ObjectCount,
+			["cards"] = cards,
+			["tokens"] = tokens,
+			["dice"] = dice,
+			["face_down"] = faceDown,
+			["in_piles"] = inPiles,
+			["piles"] = pileInfo,
+			["selection_count"] = objects.Selection.Count,
+			["grid_snap"] = objects.GridSnapEnabled,
+			["card_definitions"] = objects.CardDefinitions.Count,
+			["token_definitions"] = objects.TokenDefinitions.Count,
+			["items"] = list,
+		};
+	}
+
+	private static Godot.Collections.Array ToArray(System.Collections.Generic.IReadOnlyList<int> values)
+	{
+		var arr = new Godot.Collections.Array();
+		foreach (int v in values)
+			arr.Add(v);
+		return arr;
 	}
 
 	// ------------------------------------------------------------------ 字体

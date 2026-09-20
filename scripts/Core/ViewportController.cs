@@ -34,6 +34,9 @@ public partial class ViewportController : Node
 	/// <summary>物件查询器；为空时任何左键都视为点在空白处。</summary>
 	public IWorldPicker? Picker { get; set; }
 
+	/// <summary>滚轮优先拦截器（例如 Alt+滚轮旋转物件）；为空或返回 false 时滚轮归相机缩放。</summary>
+	public IWheelHandler? WheelHandler { get; set; }
+
 	private BoardCamera _camera = null!;
 	private Board _board = null!;
 
@@ -49,6 +52,13 @@ public partial class ViewportController : Node
 
 	/// <summary>左键按在了某个物件上。</summary>
 	[Signal] public delegate void PrimaryPressedEventHandler(Vector2 worldPos);
+
+	/// <summary>左键按下后越过拖拽阈值，开始真正拖动。参数是<b>按下时</b>的世界坐标。</summary>
+	/// <remarks>
+	/// 这个信号是框选能工作的前提：在空白处拖动时不会有 <see cref="PrimaryPressed"/>，
+	/// 只有 <see cref="PrimaryDragged"/>（且那只给增量，拿不到起点）。
+	/// </remarks>
+	[Signal] public delegate void PrimaryDragStartedEventHandler(Vector2 startWorldPos);
 
 	/// <summary>物件拖拽中。第二个参数是世界坐标下的增量。</summary>
 	[Signal] public delegate void PrimaryDraggedEventHandler(Vector2 worldDelta);
@@ -122,10 +132,17 @@ public partial class ViewportController : Node
 
 	private void HandlePress(InputEventMouseButton mb, Vector2 screen)
 	{
-		// ---- 滚轮：以鼠标为锚缩放 ----
+		// ---- 滚轮：先给拦截器（Alt+滚轮旋转物件），没人要才用来缩放 ----
 		if (mb.ButtonIndex is MouseButton.WheelUp or MouseButton.WheelDown)
 		{
 			float steps = mb.ButtonIndex == MouseButton.WheelUp ? 1f : -1f;
+
+			if (WheelHandler is not null && WheelHandler.HandleWheel(steps, screen))
+			{
+				Consume();
+				return;
+			}
+
 			_camera.ZoomAtScreenPoint(steps, screen);
 			Consume();
 			return;
@@ -171,9 +188,17 @@ public partial class ViewportController : Node
 				break;
 
 			case Gesture.PrimaryPending:
-				// 左键轻点且落空 → 取消选中
 				if (_pressedTarget is null)
+				{
+					// 左键轻点落空 → 取消选中
 					EmitSignal(SignalName.EmptyAreaClicked, world);
+				}
+				else
+				{
+					// 点在物件上但没拖动：照样发一次"释放"，
+					// 物件系统靠它实现"轻点"语义（例如轻点骰子即掷）。
+					EmitSignal(SignalName.PrimaryReleased, world);
+				}
 				break;
 
 			case Gesture.PrimaryDragging:
@@ -217,6 +242,7 @@ public partial class ViewportController : Node
 
 			case Gesture.PrimaryPending when passedThreshold:
 				_gesture = Gesture.PrimaryDragging;
+				EmitSignal(SignalName.PrimaryDragStarted, _camera.ScreenToWorld(_gestureStartScreen));
 				goto case Gesture.PrimaryDragging;
 
 			case Gesture.PrimaryDragging:
