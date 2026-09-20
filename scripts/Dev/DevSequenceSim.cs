@@ -24,6 +24,7 @@ internal static class DevSequenceSim
 
 		await ClickThenBoxSelect(host, cam, objects, r);
 		await HoverIsTheTarget(host, cam, objects, r);
+		await SelectionClearsOnHoverOff(host, cam, objects, r);
 		await RightClickMenu(host, cam, objects, r);
 		await MenuClampsAtEdge(host, cam, objects, r);
 		await ShiftExtractFromPile(host, cam, objects, r);
@@ -35,6 +36,7 @@ internal static class DevSequenceSim
 		// 明明五项子断言全绿却报失败。
 		r["pass"] = AsBool(r, "click_then_box_ok")
 			&& AsBool(r, "hover_target_ok")
+			&& AsBool(r, "hover_off_ok")
 			&& AsBool(r, "menu_ok")
 			&& AsBool(r, "menu_edge_ok")
 			&& AsBool(r, "shift_extract_ok")
@@ -153,6 +155,59 @@ internal static class DevSequenceSim
 		r["hover_target_a_flipped"] = aFlipped;
 		r["hover_target_b_flipped"] = bFlipped;
 		r["hover_target_ok"] = !aFlipped && bFlipped && b.IsActionTarget && !a.IsActionTarget;
+	}
+
+	/// <summary>
+	/// 用户反馈的第二条：鼠标离开物件时应当取消选中。
+	///
+	/// 否则会出现「点过一张卡之后鼠标移开，它仍是选中状态、描边仍亮着，
+	/// 按 F 还会翻它」—— 明明鼠标已经不在它上面了。
+	///
+	/// 刻意不清的两种情况（单选才清）：
+	/// <list type="bullet">
+	/// <item>正在拖拽 —— 拖拽途中鼠标必然"离开"被拖的物件，不清的话一拖就丢选中。</item>
+	/// <item>多选（框选 / Ctrl+点选）—— 用户刻意建立的集合，不该被一次移动冲掉。</item>
+	/// </list>
+	/// </summary>
+	private static async Task SelectionClearsOnHoverOff(Node host, BoardCamera cam, ObjectManager objects, Godot.Collections.Dictionary r)
+	{
+		CardObject? card = FindAnyCard(objects, cam);
+		if (card is null)
+		{
+			r["hover_off_ok"] = false;
+			r["hover_off_note"] = "没有可用的卡";
+			return;
+		}
+
+		// 1) 点选它
+		Vector2 cardScreen = cam.WorldToScreen(card.Position);
+		DevInputSim.PushButton(cardScreen, MouseButton.Left, true);
+		await DevInputSim.Frame(host);
+		DevInputSim.PushButton(cardScreen, MouseButton.Left, false);
+		await DevInputSim.Frame(host);
+		await DevInputSim.Frame(host);
+
+		r["hover_off_selected_after_click"] = objects.Selection.Count;
+		bool faceBefore = card.IsFaceDown;
+
+		// 2) 鼠标移到空白处（只移动，不点击）
+		Vector2 empty = DevInputSim.FindEmptyScreenPoint(cam, objects);
+		DevInputSim.PushMotion(empty, empty - cardScreen);
+		await DevInputSim.Frame(host);
+		await DevInputSim.Frame(host);
+
+		r["hover_off_selection_after_leave"] = objects.Selection.Count;
+		r["hover_off_card_is_target"] = card.IsActionTarget;
+
+		// 3) 按 F —— 此时没有目标，不该有任何东西被改
+		DevInputSim.PushKey(Key.F);
+		await DevInputSim.Frame(host);
+		await DevInputSim.Frame(host);
+
+		bool flipped = card.IsFaceDown != faceBefore;
+		r["hover_off_flipped_by_f"] = flipped;
+
+		r["hover_off_ok"] = objects.Selection.Count == 0 && !card.IsActionTarget && !flipped;
 	}
 
 	/// <summary>挑两张互不重叠、都在屏幕内的正面卡：各自位置上的最上层物件必须就是它自己。</summary>

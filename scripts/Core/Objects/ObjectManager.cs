@@ -227,6 +227,23 @@ public partial class ObjectManager : Node2D, IWorldPicker, IWheelHandler
 			_hovered.QueueRedraw();
 		}
 
+		// 鼠标离开物件 → 取消选中。
+		//
+		// 否则会出现这种情况：点过一张卡之后鼠标移开，它仍是"选中"状态、
+		// 描边仍亮着，按 F 还会翻它 —— 明明鼠标已经不在它上面了。
+		//
+		// 两种情况刻意不清：
+		//   1. 正在拖拽 —— 拖拽途中鼠标必然会"离开"被拖的物件
+		//      （它被排除在拾取之外），不清的话一拖就丢选中。
+		//   2. 多选（框选 / Ctrl+点选）—— 那是用户刻意建立的集合，
+		//      不该被一次鼠标移动就冲掉，否则框选完立刻失效。
+		//      多选要取消用 Esc 或点空白。
+		if (hit is null && _dragging.Count == 0 && _selection.Count == 1)
+		{
+			ClearSelectionInternal();
+			return;
+		}
+
 		// 悬停就是"指着的那张"，操作目标随之变化，描边要跟着变
 		RefreshActionTargets();
 	}
