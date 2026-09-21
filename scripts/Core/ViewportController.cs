@@ -143,8 +143,18 @@ public partial class ViewportController : Node
 
 	// ------------------------------------------------------------------ 鼠标按键
 
+	/// <summary>
+	/// 收到过多少次鼠标按键事件（自检用）。
+	///
+	/// 用途是回答"这一下点击到底有没有送到输入路由" —— <c>PrimaryPressed</c> 信号
+	/// 只在<b>命中物件</b>时才发，所以"点空白处"用它验不出来。
+	/// 而"面板关着的时候会不会挡住桌面右边那一竖条的点击"恰恰只有空白点击能验。
+	/// </summary>
+	public int MouseButtonEvents { get; private set; }
+
 	private void HandleMouseButton(InputEventMouseButton mb)
 	{
+		MouseButtonEvents++;
 		Vector2 screen = mb.Position;
 
 		if (mb.Pressed)

@@ -3,22 +3,83 @@ using Godot;
 namespace TabletopSimulator.Core;
 
 /// <summary>
-/// <c>user://</c> 下的路径约定。一个「存档」= 一个玩法原型方案 = 一个自包含目录：
+/// 存档根目录下的路径约定。一个「存档」= 一个玩法原型方案 = 一个自包含目录：
 /// <code>
-/// user://saves/
-///   index.json                 存档列表（名称 / 最后修改时间）
-///   存档1/
-///     project.json             卡牌定义 / 卡组 / 区域 / 桌面主题
-///     state.json               当前对局中所有物件的位置、朝向、正反、堆叠
-///     images/                  这个存档导入的图片（每个存档独立，互不干扰）
-///     thumbs/                  存档缩略图
+/// &lt;saveRoot&gt;/
+///   saves/
+///     index.json               存档列表（名称 / 最后修改时间）
+///     存档1/
+///       project.json           卡牌定义 / 卡组 / 区域 / 桌面主题
+///       state.json             当前对局中所有物件的位置、朝向、正反、堆叠
+///       images/                这个存档导入的图片（每个存档独立，互不干扰）
+///       thumbs/                存档缩略图
+///   logs/
+///     history.jsonl            操作日志（每行一条，可 diff、可二次处理）
+///   last_save.txt              上次打开的存档名（一行文本）
 /// </code>
-/// Windows 上实际位置是 <c>%APPDATA%\Godot\app_userdata\Tabletop Simulator\saves\</c>。
+///
+/// Windows 上默认根是 <c>%APPDATA%\Godot\app_userdata\Tabletop Simulator\</c>。
+///
+/// <b>为什么允许换根（<c>--save-root</c>）：</b>沙箱里 <c>user://</c> 不可写，
+/// 而"存 → 重启 → 读 → 逐字段比对"这条循环恰恰是 M4 最值钱的一条断言 ——
+/// 手测过就算数的存档功能等于没验。把根指到工作区里的临时目录，
+/// 每次自检都能把整条循环重跑一遍，真实存档也绝不会被自检碰脏。
 /// </summary>
 public static class AppPaths
 {
-	public const string SavesRoot = "user://saves";
-	public const string SaveIndexFile = "user://saves/index.json";
+	/// <summary>默认根（<c>user://</c>）。</summary>
+	public const string DefaultRoot = "user://";
+
+	/// <summary>命令行开关。<c>--save-root &lt;路径&gt;</c></summary>
+	public const string RootFlag = "--save-root";
+
+	private static string _root = DefaultRoot;
+
+	/// <summary>
+	/// 当前存档根。以 <c>/</c> 结尾，可直接拼相对路径。
+	///
+	/// 由 <see cref="Initialize"/> 决定：命令行 &gt; <c>user://</c>。
+	/// 刻意不做成"每处各自读一次命令行"—— 那种写法会在某个漏改的调用点
+	/// 悄悄退回默认根，而症状是"自检把真实存档改乱了"。
+	/// </summary>
+	public static string Root => _root;
+
+	/// <summary>本次运行是否用了自定义根（自检的元断言要核对这件事）。</summary>
+	public static bool UsingCustomRoot => !string.Equals(_root, DefaultRoot, System.StringComparison.Ordinal);
+
+	/// <summary>
+	/// 启动时定根。<b>必须在使用任何路径之前调用</b>（见 <c>Main._Ready</c> 的说明）。
+	///
+	/// 命令行给相对路径时按工作目录解析 —— <c>shot.ps1</c> 传的就是相对路径，
+	/// 而 Godot 的工作目录是项目根，于是自检的存档落在 <c>.dev/userdata/</c> 下。
+	/// </summary>
+	public static void Initialize(string rawRoot)
+	{
+		if (string.IsNullOrWhiteSpace(rawRoot))
+		{
+			_root = DefaultRoot;
+			return;
+		}
+
+		string root = rawRoot.Replace('\\', '/').Trim();
+
+		if (!root.EndsWith('/'))
+			root += "/";
+
+		_root = root;
+	}
+
+	public static string SavesRoot => $"{_root}saves";
+
+	public static string SaveIndexFile => $"{SavesRoot}/index.json";
+
+	public static string LogsDir => $"{_root}logs";
+
+	public static string HistoryLogFile => $"{LogsDir}/history.jsonl";
+
+	/// <summary>上次打开的存档名（一行文本）。不存在 = 首次运行。</summary>
+	public static string LastSaveFile => $"{_root}last_save.txt";
+
 	public const string DefaultSaveName = "存档1";
 
 	public static string SaveDir(string saveName) => $"{SavesRoot}/{Sanitize(saveName)}";
@@ -31,7 +92,7 @@ public static class AppPaths
 
 	public static string StateFile(string saveName) => $"{SaveDir(saveName)}/state.json";
 
-	/// <summary>某张导入图片的完整 <c>user://</c> 路径。</summary>
+	/// <summary>某张导入图片的完整路径（存档目录可整体搬走 —— 所以只存文件名）。</summary>
 	public static string ImageFile(string saveName, string fileName) =>
 		$"{ImagesDir(saveName)}/{fileName}";
 
@@ -53,7 +114,7 @@ public static class AppPaths
 		return string.IsNullOrEmpty(cleaned) ? DefaultSaveName : cleaned;
 	}
 
-	/// <summary>递归创建目录（<c>user://</c> / <c>res://</c> 前缀都支持）。返回是否成功。</summary>
+	/// <summary>递归创建目录（<c>user://</c> / <c>res://</c> / 绝对路径都支持）。返回是否成功。</summary>
 	public static bool EnsureDir(string dir)
 	{
 		if (DirAccess.DirExistsAbsolute(dir))
@@ -74,7 +135,7 @@ public static class AppPaths
 		return ok;
 	}
 
-	/// <summary>列出 <c>user://saves/</c> 下所有存档目录名（不含 index.json）。</summary>
+	/// <summary>列出根下所有存档目录名（不含 index.json）。</summary>
 	public static string[] ListSaveNames()
 	{
 		EnsureDir(SavesRoot);
@@ -92,6 +153,30 @@ public static class AppPaths
 
 		names.Sort(System.StringComparer.OrdinalIgnoreCase);
 		return names.ToArray();
+	}
+
+	/// <summary>写"上次打开的存档"。失败只警告 —— 它丢了最多是下次退回示例内容。</summary>
+	public static void WriteLastSave(string saveName)
+	{
+		EnsureDir(_root);
+		using FileAccess? f = FileAccess.Open(LastSaveFile, FileAccess.ModeFlags.Write);
+		if (f is null)
+		{
+			GD.PushWarning($"[AppPaths] 写不了 {LastSaveFile}，下次启动会退回示例内容");
+			return;
+		}
+
+		f.StoreString(saveName);
+	}
+
+	/// <summary>读"上次打开的存档"；没有或读不出则返回空串。</summary>
+	public static string ReadLastSave()
+	{
+		if (!FileAccess.FileExists(LastSaveFile))
+			return string.Empty;
+
+		using FileAccess? f = FileAccess.Open(LastSaveFile, FileAccess.ModeFlags.Read);
+		return f?.GetAsText().Trim() ?? string.Empty;
 	}
 
 	/// <summary>把 <c>user://</c> 路径转成系统绝对路径（打日志 / 给用户看时用）。</summary>

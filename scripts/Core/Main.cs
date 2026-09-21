@@ -39,6 +39,9 @@ public partial class Main : Node2D
 	/// <summary>撤销 / 重做（M4）。</summary>
 	public UndoSystem Undo { get; private set; } = null!;
 
+	/// <summary>操作日志面板（M4）。</summary>
+	public LogPanel Log { get; private set; } = null!;
+
 	/// <summary>物件管理器。同时也是场景里的 <c>Objects</c> 容器节点。</summary>
 	public ObjectManager Objects { get; private set; } = null!;
 
@@ -53,6 +56,15 @@ public partial class Main : Node2D
 
 	public override void _Ready()
 	{
+		// <b>先定存档根，再碰任何路径。</b>
+		//
+		// 沙箱里 user:// 不可写，而"存 → 重启 → 读 → 逐字段比对"这条循环
+		// 正是 M4 最值钱的断言。自检脚本传 --save-root 把根指到工作区里，
+		// 于是整条循环每次自检都能重跑，真实存档也绝不会被碰脏。
+		// 放在 _Ready 最前面：CreateDirectories 之类的调用一旦先跑，
+		// 目录就已经按默认根建好了。
+		AppPaths.Initialize(Dev.CmdLine.GetValue(AppPaths.RootFlag));
+
 		_board = GetNode<Board>("Board");
 		_camera = GetNode<BoardCamera>("Camera2D");
 		_viewport = GetNode<ViewportController>("ViewportController");
@@ -95,6 +107,11 @@ public partial class Main : Node2D
 		Objects.Undo = Undo;
 		Zones.Undo = Undo;
 		Undo.Bind(Objects, Zones);
+
+		// 操作日志面板（M4 第 6 步）。挂到 HUD 层上，UI 在它自己的 _Ready 里建。
+		// 建在这里而不是 Main.tscn 里：少一处手工同步场景文件的地方
+		// （编辑器把内存里旧场景写回去过一次，代价很大）。
+		Log = LogPanel.Attach(_hud, Undo, _hud);
 
 		// 拖拽走"起止"两条边而不是"每一步"：一次手势只产出 1 条历史。
 		// 若每帧记一条，拖一张牌 100 帧就是 100 条，Ctrl+Z 要按 100 次。

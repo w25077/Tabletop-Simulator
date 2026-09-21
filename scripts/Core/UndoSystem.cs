@@ -25,6 +25,15 @@ public partial class UndoSystem : Node
 	public const int Capacity = 300;
 
 	/// <summary>
+	/// 历史条目有变化（新增 / 合并 / 截断 / 清空）。
+	///
+	/// 操作日志面板与 <c>history.jsonl</c> 都挂在这个信号上 ——
+	/// 于是"面板显示的内容"和"文件里写的内容"必然同源，
+	/// 而不是两处各自去翻历史（那种写法迟早分叉，症状是"面板 12 条、文件 13 条"）。
+	/// </summary>
+	[Signal] public delegate void HistoryChangedEventHandler();
+
+	/// <summary>
 	/// 连击合并的时间窗（按<b>帧</b>数，不是毫秒）。
 	///
 	/// 用帧数是有意的：合成输入的自检里，帧是唯一可靠的"时间"。
@@ -108,6 +117,36 @@ public partial class UndoSystem : Node
 
 	/// <summary>下一次重做会应用的那条的描述。没有则空串。</summary>
 	public string RedoLabel => _cursor < _entries.Count ? _entries[_cursor].Label : "";
+
+	/// <summary>
+	/// 一步操作在日志里的样子（操作日志面板与 <c>history.jsonl</c> 共用）。
+	/// </summary>
+	/// <param name="Index">条目下标。点这一行 = <c>TravelTo(Index + 1)</c>。</param>
+	/// <param name="Label">中文可读描述。</param>
+	/// <param name="Frame">记下这条时的引擎帧号（相对时间显示用）。</param>
+	/// <param name="MergeKey">连击合并键（空 = 不参与合并）。</param>
+	internal readonly record struct LogEntry(int Index, string Label, int Frame, string MergeKey);
+
+	/// <summary>
+	/// 全部历史条目的只读视图，按下标即时间线位置。
+	///
+	/// 面板与落盘都从它取数据，而不是各自去翻 <c>_entries</c> ——
+	/// 两份遍历迟早会分叉，而症状是"面板显示 12 条、文件里写了 13 条"。
+	/// </summary>
+	internal IReadOnlyList<LogEntry> LogEntries
+	{
+		get
+		{
+			var list = new List<LogEntry>(_entries.Count);
+			for (int i = 0; i < _entries.Count; i++)
+			{
+				Entry e = _entries[i];
+				list.Add(new LogEntry(i, e.Label, e.Frame, e.MergeKey));
+			}
+
+			return list;
+		}
+	}
 
 	internal void Bind(ObjectManager objects, ZoneManager zones)
 	{
@@ -228,6 +267,7 @@ public partial class UndoSystem : Node
 		}
 
 		bool merged = false;
+		Entry? mergedInto = null;
 
 		if (allowMerge && mergeKey.Length > 0 && _cursor > 0)
 		{
@@ -252,13 +292,14 @@ public partial class UndoSystem : Node
 					top.After = after;
 					top.Label = combined;
 					merged = true;
+					mergedInto = top;
 				}
 			}
 		}
 
 		if (!merged)
 		{
-			_entries.Add(new Entry(before, after, label, mergeKey));
+			_entries.Add(new Entry(before, after, label, mergeKey, (int)Engine.GetProcessFrames()));
 			_cursor = _entries.Count;
 			AppendCount++;
 
@@ -270,6 +311,9 @@ public partial class UndoSystem : Node
 		}
 		else
 		{
+			// 合并之后这条的时间戳要跟着走 —— 否则日志面板会把一串连击显示成
+			// "全部发生在最开始那一刻"，相对时间一眼看去就是错的。
+			mergedInto!.Frame = (int)Engine.GetProcessFrames();
 			MergeCount++;
 		}
 
@@ -278,6 +322,8 @@ public partial class UndoSystem : Node
 		_lastMergeKey = mergeKey;
 
 		Trace(merged ? "合并" : "新增", label);
+
+		EmitSignal(SignalName.HistoryChanged);
 	}
 
 	private void Trace(string kind, string label)
@@ -460,6 +506,7 @@ public partial class UndoSystem : Node
 		_cursor = 0;
 		_gestureBefore = null;
 		_current = SceneSnapshot.Capture(_objects, _zones);
+		EmitSignal(SignalName.HistoryChanged);
 	}
 
 	/// <summary>
@@ -484,6 +531,7 @@ public partial class UndoSystem : Node
 		{
 			TruncatedRedoCount += _entries.Count - _cursor;
 			_entries.RemoveRange(_cursor, _entries.Count - _cursor);
+			EmitSignal(SignalName.HistoryChanged);
 		}
 
 		_current = SceneSnapshot.Capture(_objects, _zones);
@@ -552,17 +600,22 @@ public partial class UndoSystem : Node
 	/// <summary>一条历史记录：一次操作前后两份快照。</summary>
 	private sealed class Entry
 	{
-		internal Entry(SceneSnapshot before, SceneSnapshot after, string label, string mergeKey)
+		internal Entry(SceneSnapshot before, SceneSnapshot after, string label, string mergeKey, int frame)
 		{
 			Before = before;
 			After = after;
 			Label = label;
 			MergeKey = mergeKey;
+			Frame = frame;
 		}
 
 		internal SceneSnapshot Before { get; }
 		internal SceneSnapshot After { get; set; }
 		internal string Label { get; set; }
 		internal string MergeKey { get; }
+
+		/// <summary>记下这条时的引擎帧号（日志面板显示相对时间用）。
+		/// 用帧号而不是墙上时间：自检里帧是唯一可靠的时间，写死毫秒会让断言随机器速度抖。</summary>
+		internal int Frame { get; set; }
 	}
 }

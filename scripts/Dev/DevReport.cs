@@ -72,6 +72,7 @@ internal static class DevReport
 		report["zones"] = ZoneProbe(main);
 		report["badge_render"] = BadgeProbe(main, frame);
 		report["visual"] = VisualProbe(main, frame);
+		report["log_panel"] = LogPanelProbe(main, vpSize, frame);
 
 		if (main.GetNodeOrNull("Camera2D") is BoardCamera cam)
 			report["camera_anchor_invariant"] = CameraAnchorProbe(cam);
@@ -861,5 +862,109 @@ internal static class DevReport
 		foreach (Node c in n.GetChildren())
 			arr.Add($"{c.Name}:{c.GetClass()}");
 		return arr;
+	}
+
+	/// <summary>
+	/// 操作日志面板的几何证据（M4 第 6 步）。
+	///
+	/// <b>为什么不能只断言"它打开了"：</b>面板是代码建的 <c>Control</c>，
+	/// <c>Visible=true</c> 而矩形是零尺寸、或整个跑到屏幕外，都能让
+	/// "面板开不开"那条断言全绿，而用户按 Tab 什么也看不见。
+	/// 所以这里量的是<b>矩形本身</b>：宽度、是否在视口内、是否落在
+	/// "顶栏下沿 → 底部提示条上沿"那条带里。
+	///
+	/// 探针自己会先把面板打开来量，量完还原 —— 报告是在截图之后生成的，
+	/// 所以不会污染已存下的那一帧。
+	/// </summary>
+	private static Godot.Collections.Dictionary LogPanelProbe(Node main, Vector2 viewportSize, Image frame)
+	{
+		var outDict = new Godot.Collections.Dictionary();
+
+		if (main is not Main m || !GodotObject.IsInstanceValid(m.Log))
+		{
+			// 没有 pass 键 = 没跑（约定），不是失败
+			outDict["skipped"] = "Main.Log 上没有 LogPanel";
+			return outDict;
+		}
+
+		LogPanel panel = m.Log;
+		bool wasOpen = panel.IsOpen;
+
+		panel.Open();
+		Rect2 r = panel.GetGlobalRect();
+
+		outDict["row_count"] = panel.RowCount;
+		outDict["title"] = panel.TitleForTest;
+		outDict["rect"] = new Godot.Collections.Array { r.Position.X, r.Position.Y, r.Size.X, r.Size.Y };
+		outDict["viewport"] = new Godot.Collections.Array { viewportSize.X, viewportSize.Y };
+
+		// 面板矩形里到底画了东西没有。
+		//
+		// <b>这是"看得见"这一层唯一诚实的证据。</b>矩形量对、Visible 为真，
+		// 都还可能是"一块和桌面同色的空板"或"被别的东西盖住"。
+		// 判据取"颜色数"：纯色板是 1~2 种，面板有边框、标题、列表行、按钮，
+		// 实测 200 以上。取 20 这个阈值宽松到不会因主题微调而假红，
+		// 又足以拦住"什么都没画"。
+		int x0 = (int)r.Position.X;
+		int y0 = (int)r.Position.Y;
+		int x1 = (int)r.End.X;
+		int y1 = (int)r.End.Y;
+
+		if (x1 > x0 && y1 > y0 && frame.GetWidth() > x1 && frame.GetHeight() > y1)
+		{
+			Godot.Collections.Dictionary stats = RegionStats(frame, x0, y0, x1, y1);
+			int distinct = (int)stats["distinct_colors"];
+			outDict["panel_distinct_colors"] = distinct;
+			outDict["panel_dominant_hex"] = stats["dominant_hex"];
+			outDict["panel_has_content"] = distinct >= 20;
+		}
+		else
+		{
+			outDict["panel_distinct_colors"] = 0;
+			outDict["panel_has_content"] = false;
+		}
+
+		bool insideViewport =
+			r.Position.X >= 0f && r.Position.Y >= 0f &&
+			r.End.X <= viewportSize.X + 0.5f && r.End.Y <= viewportSize.Y + 0.5f;
+
+		bool widthOk = Mathf.Abs(r.Size.X - LogPanel.PanelWidth) <= 1f;
+
+		// 面板必须贴在右边缘：左边缘应当在屏幕右半边
+		bool onRightEdge = r.Position.X > viewportSize.X * 0.5f;
+
+		// 上沿要在顶栏（约 42px）之下，下沿要在提示条（约 20px）之上
+		bool clearsBars = r.Position.Y >= 42f && r.End.Y <= viewportSize.Y - 20f;
+
+		// <b>高度必须真的撑开。</b>
+		//
+		// 这一条是修完一个 bug 之后补的：第一版在 <c>AddChild</c> 之前设锚点，
+		// 于是面板宽度对（320）、位置对（右边缘）、`Visible` 也是真 ——
+		// 唯独高度恒为 <b>0</b>：它在屏幕上根本不显示任何东西。
+		// 而上面那三条判据<b>全都通过</b>了（0 高的矩形当然"在视口内"、
+		// 也当然"不挡顶栏底栏"）。只有把高度本身写进判据才拦得住。
+		float wantedHeight = viewportSize.Y - 50f - 34f;
+		bool heightOk = Mathf.Abs(r.Size.Y - wantedHeight) <= 2f;
+
+		// 有历史时列表必须真的有行 —— 空列表说明"面板开了但没接上历史"
+		bool rowsMatchHistory = panel.RowCount == m.Undo.Count;
+		bool hasContent = outDict.ContainsKey("panel_has_content") && outDict["panel_has_content"].AsBool();
+
+		outDict["inside_viewport"] = insideViewport;
+		outDict["width_ok"] = widthOk;
+		outDict["height_ok"] = heightOk;
+		outDict["wanted_height"] = wantedHeight;
+		outDict["on_right_edge"] = onRightEdge;
+		outDict["clears_top_and_bottom_bars"] = clearsBars;
+		outDict["rows_match_history"] = rowsMatchHistory;
+
+		outDict["pass"] = insideViewport && widthOk && heightOk && onRightEdge
+			&& clearsBars && rowsMatchHistory && hasContent;
+
+		// 还原：探针不许改变被测状态（这条在 DevHistorySim 上已经栽过一次）
+		if (!wasOpen)
+			panel.Close();
+
+		return outDict;
 	}
 }

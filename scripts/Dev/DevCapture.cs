@@ -30,9 +30,19 @@ public partial class DevCapture : Node
 	private const string FlagExit = "--shot-exit";
 	private const string FlagZoom = "--zoom";
 	private const string FlagCenter = "--center";
+	private const string FlagOpenLog = "--open-log";
 
 	public override void _Ready()
 	{
+		// <b>定存档根要排在最前面。</b>
+		//
+		// Godot 是子节点先 _Ready，所以本节点（DevCapture）的 _Ready 跑在
+		// Main._Ready 之前。Main 里也调了一次 AppPaths.Initialize ——
+		// 但自检的报告是在**本节点**里生成的，若不在这里先定根，
+		// 报告与探针就会用默认的 user:// 根，而自检恰恰是为了避开它。
+		// 两次调用是幂等的（同一个命令行参数，同样的结果），不冲突。
+		AppPaths.Initialize(CmdLine.GetValue(AppPaths.RootFlag));
+
 		string shotPath = CmdLine.GetValue(FlagShot);
 		if (string.IsNullOrWhiteSpace(shotPath))
 		{
@@ -116,6 +126,15 @@ public partial class DevCapture : Node
 		await ToSignal(RenderingServer.Singleton, RenderingServer.SignalName.FramePostDraw);
 		ApplyViewOverrides();
 
+		// --open-log：截一张"操作日志面板打开着"的图。
+		// 面板默认是关的（Tab 才开），不这样的话验收图上看不到它 ——
+		// 而"面板长什么样"恰恰是这一步唯一需要人眼确认的东西。
+		if (CmdLine.HasFlag(FlagOpenLog) &&
+			GetTree().Root.GetNodeOrNull("Main") is Main main && GodotObject.IsInstanceValid(main.Log))
+		{
+			main.Log.Open();
+		}
+
 		// 再等若干帧，让镜头定位、主题应用、字体光栅化都落定。
 		for (int i = 0; i < Mathf.Max(frames, 1); i++)
 			await ToSignal(RenderingServer.Singleton, RenderingServer.SignalName.FramePostDraw);
@@ -162,6 +181,11 @@ public partial class DevCapture : Node
 			ObjectManager? objects = main.GetNodeOrNull<ObjectManager>("Objects");
 			ZoneManager? zones = main.GetNodeOrNull<ZoneManager>("Zones");
 			SceneSnapshot? baseline = null;
+
+			// 日志面板要从 Main 上取（它是代码建的，不在场景文件里）。
+			// 取不到时传 null，探针会跳过面板那几条断言而不是崩掉 ——
+			// "没条件跑"必须和"跑挂了"长得不一样，这条约定 M3 就定下了。
+			LogPanel? log = (main as Main)?.Log;
 
 			// 撤销流程的自检排在<b>最前面</b>：它要从"这一局真实的起步状态"往下走，
 			// 而任何先动过手的探针都会把历史重新基准化（见 DevUndoFlowSim 的说明）。
@@ -228,12 +252,14 @@ public partial class DevCapture : Node
 					report["undo_simulation"] = DevUndoSim.RestoreAndCompare(objects, zones, baseline);
 				}
 
-				// 撤销历史（M4 第 3 步）。排在快照写回之后：
-				// 它自己会 Reset 历史、拖牌、撤销，不依赖前面的桌子状态。
+				// 撤销历史（M4 第 3 步）+ 操作日志面板（第 6 步）。
+				// 排在快照写回之后：它自己会 Reset 历史、拖牌、撤销，
+				// 不依赖前面的桌子状态。
 				if (main.GetNodeOrNull<UndoSystem>("Undo") is UndoSystem undo && zones is not null)
 				{
 					GD.Print("[DevCapture] phase: history simulation");
-					report["history_simulation"] = await DevHistorySim.Probe(this, cam, objects, zones, undo);
+					report["history_simulation"] = await DevHistorySim.Probe(
+						this, cam, objects, zones, undo, log, vc);
 				}
 			}
 		}

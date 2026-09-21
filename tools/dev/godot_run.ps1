@@ -108,6 +108,14 @@ $godotArgs = @(
 if ($Zoom)   { $godotArgs += @("--zoom", $Zoom) }
 if ($Center) { $godotArgs += @("--center", $Center) }
 
+# Point the app's save root at the workspace. user:// is not writable inside the
+# harness sandbox, so without this the save/load self-check cannot run at all --
+# and M4's save feature would rest on "I clicked it once and it looked fine".
+$saveRoot = Join-Path $devDir "userdata"
+if (Test-Path $saveRoot) { Remove-Item $saveRoot -Recurse -Force -ErrorAction SilentlyContinue }
+New-Item -ItemType Directory -Force -Path $saveRoot | Out-Null
+$godotArgs += @("--save-root", $saveRoot.Replace('\', '/'))
+
 Write-Host "[run] godot   = $GodotExe"
 Write-Host "[run] shot    = $shotPath"
 Write-Host "[run] timeout = ${TimeoutSec}s"

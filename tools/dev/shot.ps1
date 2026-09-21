@@ -89,6 +89,20 @@ $extraArgs = @()
 if ($Zoom)   { $extraArgs += @("--zoom", $Zoom) }
 if ($Center) { $extraArgs += @("--center", $Center) }
 
+# Redirect the app's save root into the workspace.
+#
+# user:// lives under %APPDATA%\Godot\app_userdata, which the harness sandbox
+# refuses to write. Without this flag the save/load self-check could not run at
+# all, and "it worked when I clicked it" would be the only evidence for M4's
+# save feature. With it, the whole save -> mutate -> load -> compare loop is
+# re-run on every self-check, and the user's real saves are never touched.
+#
+# The directory is wiped each run so the report never sees yesterday's files.
+$saveRoot = Join-Path $projectDir ".dev\userdata"
+if (Test-Path $saveRoot) { Remove-Item $saveRoot -Recurse -Force -ErrorAction SilentlyContinue }
+New-Item -ItemType Directory -Force -Path $saveRoot | Out-Null
+$extraArgs += @("--save-root", $saveRoot.Replace('\', '/'))
+
 $prevEap = $ErrorActionPreference
 $ErrorActionPreference = "Continue"
 $raw = & $GodotExe --path $projectDir -- --shot $shotPath --shot-frames $Frames @extraArgs --shot-exit 2>&1 | Out-String

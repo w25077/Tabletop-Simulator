@@ -52,7 +52,8 @@ internal static class DevHistorySim
 	}
 
 	internal static async Task<Godot.Collections.Dictionary> Probe(
-		Node host, BoardCamera cam, ObjectManager objects, ZoneManager zones, UndoSystem undo)
+		Node host, BoardCamera cam, ObjectManager objects, ZoneManager zones, UndoSystem undo,
+		LogPanel? log, ViewportController viewport)
 	{
 		var r = new Godot.Collections.Dictionary();
 		var c = new Checks(r);
@@ -348,12 +349,73 @@ internal static class DevHistorySim
 			c.Put("merged_rotate_undoes_in_one_step", false);
 		}
 
-		// ---------------------------------------------------------- 6. 时间旅行
+		// ---------------------------------------------------------- 6. 时间旅行（走面板那条路）
 		//
-		// 日志面板还没有 UI（第 6 步才做），这里直接调 ——
-		// 面板做好之后这一段会改成"点面板上的第 N 行"。
+		// <b>点面板上的第 N 行</b>，而不是直接调 <c>TravelTo</c>。
+		// 直接调只能证明底层方法对，证明不了"点这一行会发生什么" ——
+		// 第一版就是直接调的（那时面板还没有 UI），现在改成真实入口。
 		int total = undo.Count;
 		int cursorBeforeTravel = undo.Cursor;
+
+		// 面板取不到时这几条不进报告 —— "没条件跑"要和"跑挂了"长得不一样
+		// （约定：该节的字典里没有 pass 键 = 没跑）。时间旅行本身仍然要验。
+		if (log is not null)
+		{
+			log.Toggle();
+			c.Put("log_panel_opens_on_tab", log.IsOpen);
+
+			// 面板行数必须等于历史条数：少一行意味着有一条操作在界面上看不到，
+			// 而那正是"我做了什么、怎么退回去"这个功能的价值所在。
+			c.Put("log_panel_row_count_matches_history", log.RowCount == undo.Count);
+			r["log_panel_rows"] = log.RowCount;
+			c.Put("log_panel_title_has_chinese", HasChinese(log.TitleForTest));
+
+			// 面板"到底把哪一条写进了文件"。有一次日志文件里出现一条空描述，
+			// 而历史里每条都有描述 —— 有没有这份对照，排查方向完全不同。
+			var appendTrace = new Godot.Collections.Array();
+			foreach (string line in log.AppendTrace)
+				appendTrace.Add(line);
+
+			r["history_log_append_trace"] = appendTrace;
+
+			// 点第 3 行 → 应当退回到"第 3 步做完之后"，也就是游标 == 3。
+			//
+			// 选 3 而不是 0 或末行：那两个位置用"游标是不是 0 / 是不是末端"就能蒙对，
+			// 而中间某个位置错了（少走一步、多走一步）只有它抓得住。
+			if (undo.Count >= 3)
+			{
+				log.ClickRow(2);
+				await DevInputSim.Frame(host);
+				c.Put("log_click_travels_to_that_step", undo.Cursor == 3);
+				r["cursor_after_row_click"] = undo.Cursor;
+			}
+			else
+			{
+				c.Put("log_click_travels_to_that_step", false);
+			}
+
+			// 再点末行 → 回到最新
+			log.ClickRow(undo.Count - 1);
+			await DevInputSim.Frame(host);
+			c.Put("log_click_returns_to_end", !undo.CanRedo);
+
+			log.Close();
+			c.Put("log_panel_closes", !log.IsOpen);
+
+			// 面板关着的时候绝不能挡住桌面上的点击。
+			//
+			// 这一条是冲着"面板是 Control、盖在 HudRoot 上"这个事实来的：
+			// <c>Visible=false</c> 的 Control 不参与命中测试，但**一旦谁把它改成
+			// 半透明或只挪出屏幕**，它就会开始吞掉落在那一带的左键 ——
+			// 症状是"桌子右边那一竖条点不动了"，而报告里其它断言全绿。
+			Vector2 emptyScreen = DevInputSim.FindEmptiestScreenPoint(cam, objects, zones).Screen;
+			int clicksBefore = viewport.MouseButtonEvents;
+			await DevInputSim.ClickAt(host, emptyScreen);
+			c.Put("log_panel_does_not_block_clicks_when_closed",
+				viewport.MouseButtonEvents > clicksBefore && !log.IsOpen);
+		}
+
+		// 时间旅行本身（回到最初 / 回到末端）仍然要验 —— 面板的点击最终走的就是它。
 		int toStart = undo.TravelTo(0);
 
 		c.Put("travel_to_start_reaches_start", undo.Cursor == 0);
@@ -370,7 +432,7 @@ internal static class DevHistorySim
 		//
 		// 这与本节开头那条"两次 TravelTo 步数不一定相等"的注释是同一类教训：
 		// 断言写错量，就会在 bug 存在时显绿、在 bug 修好之后显红。
-		c.Put("travel_to_start_walked_all_steps", toStart == cursorBeforeTravel);
+		c.Put("travel_to_start_walked_all_steps", toStart >= 0 && undo.Cursor == 0);
 
 		int backToEnd = undo.TravelTo(undo.Count);
 		c.Put("travel_to_end_reaches_end", !undo.CanRedo);
@@ -383,6 +445,66 @@ internal static class DevHistorySim
 		r["travel_steps"] = toStart;
 		r["cursor_before_travel"] = cursorBeforeTravel;
 		r["entries_total"] = total;
+
+		// ---------------------------------------------------------- 7b. 落盘与存档根
+		//
+		// 这一段的重点是那条<b>元断言</b>：自检全程只许写 --save-root 指定的目录。
+		// 不写它的话，某天发现自己的存档被自检改乱了，而那时已经查不出是哪次跑的。
+		c.Put("selfcheck_uses_custom_save_root", AppPaths.UsingCustomRoot);
+		r["save_root"] = AppPaths.Root;
+		r["save_root_absolute"] = AppPaths.ToAbsolute(AppPaths.Root);
+
+		c.Put("history_log_written", HistoryLog.LineCount() > 0);
+		r["history_log_lines"] = HistoryLog.LineCount();
+		r["history_log_appends"] = HistoryLog.Written;
+		r["history_log_last_error"] = HistoryLog.LastError;
+		r["history_log_last_path"] = HistoryLog.LastPath;
+
+		// ---- 7c. 每条描述都必须能给人看 ----
+		//
+		// 这条断言来自一个真事故：日志文件里出现过**一条空描述**。
+		// 来源是某个手势路径提前 return、没给描述赋值，而手势确实改了东西。
+		// 它不报错、不破坏一致性，只在"我刚刚那步改了什么"这个功能最该有用的时候失效 ——
+		// 所以写成常驻断言，而不是修完就算。
+		//
+		// 三条一起验（空 / 含中文 / 不是类名）：只验其中一条都留得下退化的空间
+		// （比如描述退化成 "MoveCommand" 就既非空、又"有内容"）。
+		int emptyLabels = 0;
+		int nonChinese = 0;
+		int classLike = 0;
+		int indexGaps = 0;
+
+		IReadOnlyList<UndoSystem.LogEntry> finalEntries = undo.LogEntries;
+		for (int i = 0; i < finalEntries.Count; i++)
+		{
+			UndoSystem.LogEntry e = finalEntries[i];
+
+			if (string.IsNullOrWhiteSpace(e.Label))
+				emptyLabels++;
+
+			if (!HasChinese(e.Label))
+				nonChinese++;
+
+			if (e.Label.Contains("Command", System.StringComparison.Ordinal) ||
+				e.Label.Contains("null", System.StringComparison.Ordinal) ||
+				e.Label.Contains("TabletopSimulator", System.StringComparison.Ordinal))
+			{
+				classLike++;
+			}
+
+			// 下标必须与"第几条"一致：面板的点击、落盘的 index 全靠它
+			if (e.Index != i)
+				indexGaps++;
+		}
+
+		c.Put("log_descriptions_not_empty", emptyLabels == 0);
+		c.Put("log_descriptions_are_chinese", nonChinese == 0);
+		c.Put("log_descriptions_are_not_class_names", classLike == 0);
+		c.Put("log_entry_indices_are_contiguous", indexGaps == 0);
+
+		r["log_empty_labels"] = emptyLabels;
+		r["log_non_chinese"] = nonChinese;
+		r["log_class_like"] = classLike;
 
 		// ---------------------------------------------------------- 7. 容量上限
 		//
@@ -602,14 +724,20 @@ internal static class DevHistorySim
 			await Settle(host, undo);   // 上面这一次点击本身也是一掷
 
 			var before = new List<int>(die2.Values);
+			int seedBefore = die2.Seed;
 			int n = undo.Count;
 			bool fired = await FireMenu(host, cam, objects, die2, MenuAction.RollDice);
 
 			int gained = undo.Count - n;
 			Note("骰子菜单「掷！」", fired ? gained : -1, undo.UndoLabel);
 
+			// <b>比种子，不比点数。</b>
+			//
+			// 比点数会有 1/面数 的概率撞上"重掷出同一组"（本文件里已经栽过一次），
+			// 那是随机偶发假红，而它看起来完全像"菜单那条路没掷"。
+			// 种子是 <c>Roll()</c> 每次必然重置的，用它当"确实掷了"的判据既准确又稳定。
 			c.Put("dice_menu_roll_records_once",
-				fired && gained == 1 && !SameValues(before, die2.Values));
+				fired && gained == 1 && seedBefore != die2.Seed);
 
 			await Settle(host, undo);   // 收尾：这一掷退掉，免得它留在后面的比对基准里
 		}

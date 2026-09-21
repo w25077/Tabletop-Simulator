@@ -86,6 +86,20 @@ public partial class ObjectManager : Node2D, IWorldPicker, IWheelHandler
 	private string _lastDropLabel = "";
 
 	/// <summary>
+	/// 刚结束的这次手势涉及几个物件（<see cref="DescribeLastDrop"/> 的兜底描述用它）。
+	///
+	/// 有兜底是因为真出过一次<b>空描述的历史条目</b>：某些手势路径没有走到
+	/// <see cref="OnPrimaryReleased"/> 的赋值语句，于是 <c>_lastDropLabel</c> 是空串，
+	/// 而手势确实改了东西、<c>EndGesture</c> 照样记了一条 ——
+	/// 日志里于是出现一行什么都没有的记录。它不报错、不影响一致性，
+	/// 只在"我刚刚那步改了什么"这个功能最该有用的时候失效。
+	/// </summary>
+	private int _draggedCount;
+
+	/// <summary>这次手势是否<b>不值得记</b>（框选：只改选中集，而选中集不在快照里）。</summary>
+	private bool _gestureHasNoDescription;
+
+	/// <summary>
 	/// 这次手势是否<b>已经自己记过历史</b>了（目前的唯一来源是"轻点骰子掷骰"）。
 	///
 	/// <see cref="UndoSystem.EndGesture"/> 会读它，是则跳过收尾那一条 ——
@@ -526,6 +540,7 @@ public partial class ObjectManager : Node2D, IWorldPicker, IWheelHandler
 		// "这次手势自己记过历史了吗"一并复位 —— 否则上一点击的标记会漏到下一次。
 		_lastDropLabel = "";
 		_dropAlreadyRecorded = false;
+		_gestureHasNoDescription = false;
 
 		if (_boxSelecting)
 		{
@@ -544,11 +559,18 @@ public partial class ObjectManager : Node2D, IWorldPicker, IWheelHandler
 			EmitSelectionChanged();
 			_dragging.Clear();
 			_draggingPiles.Clear();
+
+			// 框选<b>不改任何状态</b>（选中集不在快照里），所以它不该进历史 ——
+			// 而这里正是"提前 return 导致描述没被赋值"的那条路。
+			// 标记一下，让 EndGesture 跳过记录，而不是记一条空描述。
+			_gestureHasNoDescription = true;
 			return;
 		}
 
 		if (_dragging.Count == 0)
 			return;
+
+		_draggedCount = _dragging.Count;
 
 		if (_dragMoved)
 		{
@@ -704,8 +726,24 @@ public partial class ObjectManager : Node2D, IWorldPicker, IWheelHandler
 
 	// ------------------------------------------------------------------ 撤销系统的接缝
 
-	/// <summary>刚结束的这次手势的描述（撤销历史里那一行）。空串表示"没什么可说的"。</summary>
-	public string DescribeLastDrop() => _lastDropLabel;
+	/// <summary>
+	/// 刚结束的这次手势的描述（撤销历史里那一行）。<b>保证非空 —— 只要这次手势值得记。</b>
+	///
+	/// 空串只有一个含义：这次手势没有产生任何"可描述的变化"（框选），
+	/// <see cref="UndoSystem.EndGesture"/> 会据此跳过记录。
+	/// 其余情况一律给出兜底描述，宁可写"移动 3 个物件"这种笼统说法，
+	/// 也不许日志里出现一行空白 —— 那会让"我刚刚那步改了什么"这个问题无从回答。
+	/// </summary>
+	public string DescribeLastDrop()
+	{
+		if (_lastDropLabel.Length > 0)
+			return _lastDropLabel;
+
+		if (_gestureHasNoDescription || _draggedCount == 0)
+			return "";
+
+		return $"移动 {_draggedCount} 个物件";
+	}
 
 	/// <summary>
 	/// 撤销/读档把状态写回场景之后，物件系统要做的收尾。
