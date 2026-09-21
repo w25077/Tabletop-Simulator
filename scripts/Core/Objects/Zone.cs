@@ -79,6 +79,23 @@ public partial class Zone : Node2D
 		QueueRedraw();
 	}
 
+	/// <summary>
+	/// 就地换一份定义（撤销 / 读档写回时用）。与 <see cref="Configure"/> 的区别：
+	/// 后者是"建区"，必须在 <c>AddChild</c> 之前；这个是"把已有区域的定义改成快照里那份"。
+	///
+	/// <b>为什么必须有它：</b>区域定义是引用类型，而快照存的是 <c>Clone()</c> ——
+	/// 两者永远不会引用相同。若写回时只对 id、不换定义，那些
+	/// <b>只改区域定义</b>的动作（锁定 / 排版 / 盖放策略 / 容量）就撤销不掉：
+	/// 牌序与成员都正确恢复，唯独那一项设定还留在改过的状态上。
+	///
+	/// 界面上它会表现成"撤销了，但牌库还是锁定状态"，而报告里其它断言全绿。
+	/// </summary>
+	public void ApplyDefinition(ZoneDefinition definition)
+	{
+		Definition = definition;
+		QueueRedraw();
+	}
+
 	public override void _Ready()
 	{
 		Position = Vector2.Zero;   // 矩形本身就是世界坐标，节点不再偏移

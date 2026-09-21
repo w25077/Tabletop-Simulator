@@ -1235,9 +1235,33 @@ internal static class DevZoneSim
 
 		c.Put("pile_shuffle_keeps_members",
 			SameSet(shuffleBefore, shuffleAfterOne) && SameSet(shuffleBefore, shuffleAfterTwo));
-		// 洗牌必须真的动过至少一次 —— 只查成员集合的话，"什么都没做"也能通过
-		c.Put("pile_shuffle_changed_order",
-			!SameOrder(shuffleBefore, shuffleAfterOne) || !SameOrder(shuffleAfterOne, shuffleAfterTwo));
+
+		// 洗牌必须真的动过至少一次 —— 只查成员集合的话，"什么都没做"也能通过。
+		//
+		// <b>但它不能写成"洗两次里必有一次不同"。</b>这一摞只有 3 张，
+		// 而"洗后恰好还是原序"的概率是 1/6；两次都不变的概率就是 1/36。
+		// 那就是一条**随机偶发变红**的断言 —— 本次开发里它真的红过一次，
+		// 而报告里只有 `pile_shuffle_changed_order: false` 一行，
+		// 看起来完全像"洗牌坏了"，会把人引向产品的 RNG。
+		// 处置：撞上原序就**再洗一次**。多试几次仍然次次原序，才说明洗牌确实没动。
+		bool orderChanged =
+			!SameOrder(shuffleBefore, shuffleAfterOne) || !SameOrder(shuffleAfterOne, shuffleAfterTwo);
+
+		int shuffleAttempts = 2;
+		while (!orderChanged && shuffleAttempts < 8)
+		{
+			await Hover(host, cam, pile.Top!);
+			DevInputSim.PushKey(Key.R);
+			await DevInputSim.Frame(host);
+			await DevInputSim.Frame(host);
+			shuffleAttempts++;
+
+			shuffleAfterTwo = Uids(pile);
+			orderChanged = !SameOrder(shuffleBefore, shuffleAfterTwo);
+		}
+
+		r["pile_shuffle_attempts"] = shuffleAttempts;
+		c.Put("pile_shuffle_changed_order", orderChanged);
 		c.Put("pile_shuffle_seed_recorded", pile.LastShuffleSeed != 0);
 
 		// ---- C. 叠放区域（牌库）：整摞翻转 + 洗牌 ----

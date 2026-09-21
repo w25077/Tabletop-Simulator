@@ -324,13 +324,25 @@ internal sealed class SceneSnapshot
 	}
 
 	/// <summary>
-	/// 把区域集合对齐到快照：缺的造出来、多的删掉。
+	/// 把区域集合对齐到快照：缺的造出来、多的删掉、<b>已有区域的定义逐字段写回</b>。
 	///
 	/// 顺序按快照的建区次序重建，因为 <c>ZoneManager</c> 的重叠命中规则是
 	/// "取最后添加的"（视觉上画在上面的那个）—— 次序本身就是语义。
 	///
 	/// 用 <c>AddZone</c> 而不是自己 new 一个节点：区域的成员数广播与
 	/// 次序同步回调都挂在那里，绕过它建出来的区域不会通知 HUD。
+	///
+	/// <b>第三件事（"已有区域的定义"）是修完一个真 bug 之后补的。</b>
+	/// 原来这里只在"区域不存在"时用快照里的定义建它，已有区域的定义<b>一个字段都不动</b>：
+	/// 于是"锁定此区域"这类<b>只改区域定义</b>的动作撤销不掉 ——
+	/// 牌序、成员、位置全都正确恢复，唯独那块区域的锁还挂着。
+	///
+	/// 它极难自己暴露：<c>ZoneDefinition</c> 是引用类型，
+	/// 而"用户动作"是就地改它、快照存的是 <c>Clone()</c> ——
+	/// 于是 <c>ReferenceEquals(zone.Definition, snapshot.Definition)</c> 永远为假，
+	/// 靠"引用相同就跳过"这类优化根本发现不了漏写。
+	/// 抓它的是 <c>history_simulation.undo_restores_exactly</c>：
+	/// 差异只报出一行"区域定义 demo.zone.deck"，剩下全绿。
 	/// </summary>
 	private void RestoreZones(ZoneManager zones)
 	{
@@ -350,8 +362,14 @@ internal sealed class SceneSnapshot
 
 		foreach (ZoneDefinition def in Zones)
 		{
-			if (zones.Find(def.Id) is null)
-				zones.AddZone(def.Clone());
+			if (zones.Find(def.Id) is Zone existing)
+			{
+				// 已有区域：定义逐字段写回（Enabled / SortMode / FaceOnEnter / MaxCards / Tint…）
+				existing.ApplyDefinition(def.Clone());
+				continue;
+			}
+
+			zones.AddZone(def.Clone());
 		}
 	}
 }

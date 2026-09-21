@@ -86,6 +86,7 @@ public sealed class ObjectState
 		DiceSides = DiceSides,
 		DiceCount = DiceCount,
 		DiceValues = new List<int>(DiceValues),
+		DiceSeed = DiceSeed,
 		TokenTextOverride = TokenTextOverride,
 	};
 
@@ -119,6 +120,26 @@ public sealed class ObjectState
 		if (DiceSides != other.DiceSides || DiceCount != other.DiceCount)
 			return false;
 
+		// <b>点数与种子也算内容</b>（M4 第 4 步补的）。
+		//
+		// 少了这两句，"掷骰"就不是一次状态变化：快照写回之后骰子会被还原成
+		// 掷之前的点数，而 `Record` 又认为"什么都没变"、连历史都不记 ——
+		// 用户看到的是「点了骰子、数字跳了、<b>但 Ctrl+Z 撤不掉它</b>」。
+		//
+		// 种子一起进比对：同一次掷骰的两个分身（撤销再重做）必须被认成相同，
+		// 而"重掷"即使点数碰巧一样也换了种子，那是两次不同的操作。
+		if (DiceValues.Count != other.DiceValues.Count)
+			return false;
+
+		for (int i = 0; i < DiceValues.Count; i++)
+		{
+			if (DiceValues[i] != other.DiceValues[i])
+				return false;
+		}
+
+		if (DiceSeed != other.DiceSeed)
+			return false;
+
 		if (TokenTextOverride != other.TokenTextOverride)
 			return false;
 
@@ -128,15 +149,6 @@ public sealed class ObjectState
 		foreach (KeyValuePair<string, string> kv in FieldOverrides)
 		{
 			if (!other.FieldOverrides.TryGetValue(kv.Key, out string? v) || v != kv.Value)
-				return false;
-		}
-
-		if (DiceValues.Count != other.DiceValues.Count)
-			return false;
-
-		for (int i = 0; i < DiceValues.Count; i++)
-		{
-			if (DiceValues[i] != other.DiceValues[i])
 				return false;
 		}
 

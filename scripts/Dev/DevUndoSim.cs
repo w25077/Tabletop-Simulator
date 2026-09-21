@@ -339,6 +339,13 @@ internal static class DevUndoSim
 			diffs.Add($"zoneId '{a.ZoneId}' != '{b.ZoneId}'");
 		if (a.DiceSides != b.DiceSides || a.DiceCount != b.DiceCount)
 			diffs.Add($"dice {a.DiceSides}x{a.DiceCount} != {b.DiceSides}x{b.DiceCount}");
+
+		// 种子也要比：M4 第 4 步把 <c>DiceSeed</c> 补进了 <c>Clone</c> 与 <c>SameAs</c>
+		// （原来 Clone 漏拷它，于是快照里那一栏恒为 0 —— 而 0 又恰好是"未掷过"的哨兵值，
+		// 这种"错得很像对的"漏字段只有逐字段比对抓得住）。
+		if (a.DiceSeed != b.DiceSeed)
+			diffs.Add($"diceSeed {a.DiceSeed} != {b.DiceSeed}");
+
 		if (a.TokenTextOverride != b.TokenTextOverride)
 			diffs.Add($"tokenText '{a.TokenTextOverride}' != '{b.TokenTextOverride}'");
 

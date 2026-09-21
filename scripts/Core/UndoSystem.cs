@@ -77,6 +77,23 @@ public partial class UndoSystem : Node
 	/// <summary>是否正在写回快照（自检要确认它不会卡在 true 上）。</summary>
 	public bool IsApplying => _applying;
 
+	/// <summary>
+	/// 诊断计数：记录被挡掉的次数，按原因分开。
+	///
+	/// 存在的理由是一个真事故：M4 第 4 步接完新入口之后，自检里每个入口的
+	/// <b>标签都对、条数却全是 0</b> —— 光看那份报告，"记录被谁挡掉的"完全猜不出来。
+	/// 三个计数器把"猜"换成"读数字"：<c>applying</c> 非零说明写回路径里有人在记，
+	/// <c>same</c> 非零说明快照被认为没变（那是快照比对的事）。
+	/// </summary>
+	public int RecordAttempts { get; private set; }
+
+	public int RecordSuppressedApplying { get; private set; }
+
+	public int RecordSuppressedUnchanged { get; private set; }
+
+	/// <summary>写入历史的条数（合并也算一次写入）。与 <see cref="Count"/> 的区别：这个含被合并的。</summary>
+	public int RecordPushes { get; private set; }
+
 	/// <summary>历史条数（不含"当前"那一份）。</summary>
 	public int Count => _entries.Count;
 
@@ -125,6 +142,11 @@ public partial class UndoSystem : Node
 	/// </summary>
 	public void EndGesture()
 	{
+		// "这次手势自己已经记过了"要先读，且必须在任何 return 之前 ——
+		// 它由 <c>ObjectManager.OnPrimaryReleased</c> 写在<b>同一次信号</b>的更早一步
+		// （Main 里 PrimaryReleased 先接物件系统、后接 EndGesture，见那里的说明）。
+		bool alreadyRecorded = _objects.DropAlreadyRecorded;
+
 		if (_gestureBefore is null)
 			return;   // 没有 Begin 就 End，忽略（合成输入或异常路径）
 
@@ -136,6 +158,22 @@ public partial class UndoSystem : Node
 		// 没变化就不进历史。否则"点一下没拖动"也会占一条，
 		// 用户按 Ctrl+Z 时会觉得"按了一下没反应"。
 		if (SceneSnapshot.SameContent(before, after))
+		{
+			_current = after;
+			return;
+		}
+
+		// 手势自己已经记过（轻点骰子掷骰）→ 收尾这一步不再记。
+		//
+		// <b>但 _current 必须照常推进</b>：它是撤销系统的"状态真相"，
+		// 上面那条"没变化"的分支就是同一个道理。漏了这一步，
+		// 下一次 <c>Record</c> 会拿一份过期的前状态当"之前"，
+		// 于是那次操作会被记成"从刚才那一刻起的所有变化"。
+		//
+		// 这个判据比"读拖动距离"稳：距离是 <c>ObjectManager</c> 的内部量，
+		// 而且松手之后它什么时候复位是另一处实现细节 ——
+		// 用"我记过了"这件事本身当判据，就没有时序可言。
+		if (alreadyRecorded)
 		{
 			_current = after;
 			return;
@@ -154,10 +192,13 @@ public partial class UndoSystem : Node
 	/// <param name="mergeKey">合并键；空串 = 永不合并。</param>
 	public void Record(string label, string mergeKey = "")
 	{
+		RecordAttempts++;
+
 		// 写回过程中一律不记 —— 理由见 _applying 的说明。
 		// 出声而不是静默丢弃：静默会把"写回路径里混进了用户动作"这件事藏起来。
 		if (_applying)
 		{
+			RecordSuppressedApplying++;
 			GD.PushWarning($"[UndoSystem] 写回快照期间有人要记历史（{label}），已丢弃。写回路径不许记录。");
 			return;
 		}
@@ -165,7 +206,10 @@ public partial class UndoSystem : Node
 		SceneSnapshot after = SceneSnapshot.Capture(_objects, _zones);
 
 		if (SceneSnapshot.SameContent(_current, after))
+		{
+			RecordSuppressedUnchanged++;
 			return;   // 空操作不进历史
+		}
 
 		PushInternal(_current, after, label, mergeKey, allowMerge: true);
 	}
@@ -173,9 +217,15 @@ public partial class UndoSystem : Node
 	private void PushInternal(
 		SceneSnapshot before, SceneSnapshot after, string label, string mergeKey, bool allowMerge)
 	{
+		RecordPushes++;
+
 		// 在时间线中间做了新操作 → 后面那些"重做"就没了（与所有编辑器一致）
 		if (_cursor < _entries.Count)
+		{
+			TruncatedRedoCount += _entries.Count - _cursor;
+			Trace($"截断 {_entries.Count - _cursor} 条", label);
 			_entries.RemoveRange(_cursor, _entries.Count - _cursor);
+		}
 
 		bool merged = false;
 
@@ -210,6 +260,7 @@ public partial class UndoSystem : Node
 		{
 			_entries.Add(new Entry(before, after, label, mergeKey));
 			_cursor = _entries.Count;
+			AppendCount++;
 
 			if (_entries.Count > Capacity)
 			{
@@ -217,11 +268,31 @@ public partial class UndoSystem : Node
 				_cursor = _entries.Count;
 			}
 		}
+		else
+		{
+			MergeCount++;
+		}
 
 		_current = after;
 		_lastPushFrame = (int)Engine.GetProcessFrames();
 		_lastMergeKey = mergeKey;
+
+		Trace(merged ? "合并" : "新增", label);
 	}
+
+	private void Trace(string kind, string label)
+	{
+		PushTrace.Add($"{kind}「{label}」cursor={_cursor} count={_entries.Count} 帧{(int)Engine.GetProcessFrames()}");
+	}
+
+	/// <summary>
+	/// 往同一条时间线里插一条自检自己的标记（诊断用）。
+	///
+	/// 有那么一次事故卡了很久：自检里"每一步的条数与游标都对得上"，
+	/// 但两个探针各自读到的数字<b>互相矛盾</b>。当时缺的正是"探针的进出时刻"——
+	/// 有了标记，报告里就能一眼看出是"读的位置不对"还是"中间真有人动了历史"。
+	/// </summary>
+	internal void TraceMark(string note) => Trace("标记", note);
 
 	/// <summary>
 	/// 合并两次同类操作时怎么称呼它们。
@@ -264,6 +335,48 @@ public partial class UndoSystem : Node
 	internal SceneSnapshot? PeekBeforeForTest => CanUndo ? _entries[_cursor - 1].Before : null;
 
 	/// <summary>
+	/// 撤销系统认为的"当前状态"。给自检用。
+	///
+	/// 它是整个设计的枢纽：<b>撤销系统的正确性全押在"这份快照与场景一致"上</b>。
+	/// 一旦它漂了，症状极难猜 —— 下一次操作会被记成"从那份陈旧状态到现在的全部差异"，
+	/// 于是历史里出现一条描述完全对不上动作的条目，而条数看起来还是对的。
+	/// 所以自检要能直接读到它，并与"现场抓一份"逐字段比。
+	/// </summary>
+	internal SceneSnapshot PeekCurrentForTest => _current;
+
+	/// <summary>全部历史条目的描述（下标即时间线位置）。自检用 —— 让报告能直接列出历史。</summary>
+	internal List<string> EntryLabelsForTest
+	{
+		get
+		{
+			var labels = new List<string>(_entries.Count);
+			foreach (Entry e in _entries)
+				labels.Add(e.Label);
+
+			return labels;
+		}
+	}
+
+	/// <summary>被"在时间线中间做新操作"截断掉的条目数（诊断用）。</summary>
+	public int TruncatedRedoCount { get; private set; }
+
+	/// <summary>合并进上一条的次数（诊断用）。</summary>
+	public int MergeCount { get; private set; }
+
+	/// <summary>真正新增条目的次数（诊断用）。</summary>
+	public int AppendCount { get; private set; }
+
+	/// <summary>
+	/// 最近若干次 <see cref="PushInternal"/> 的现场记录（诊断用）。
+	///
+	/// 存在的理由是一次查了很久的事故：自检里"每个入口的标签都对、条数却全是 0"。
+	/// 单看那两份数字（标签变了 / Count 没变）是<b>自相矛盾</b>的 ——
+	/// 只有把"这次 push 时游标在哪、有没有截断掉后面的条目"记下来，矛盾才解开。
+	/// 事实证明那条路是"在时间线中间写入了新操作，把刚写的历史截掉"。
+	/// </summary>
+	public List<string> PushTrace { get; } = new();
+
+	/// <summary>
 	/// 撤销一步。<b>拖拽手势进行中时拒绝执行</b>，返回 false。
 	///
 	/// 为什么必须挡住：手势的"起点状态"是在按下鼠标那一刻抓的。若在手势中间
@@ -282,13 +395,20 @@ public partial class UndoSystem : Node
 	public bool Undo()
 	{
 		if (GestureInProgress || _applying)
+		{
+			Trace("撤销被拒", $"gesture={GestureInProgress} applying={_applying}");
 			return false;
+		}
 
 		if (!CanUndo)
+		{
+			Trace("撤销被拒", "没有可撤销的条目");
 			return false;
+		}
 
 		_cursor--;
 		_current = _entries[_cursor].Before;
+		Trace("撤销执行", _entries[_cursor].Label);
 		Apply(_current, $"撤销：{_entries[_cursor].Label}");
 		return true;
 	}
@@ -339,6 +459,33 @@ public partial class UndoSystem : Node
 		_entries.Clear();
 		_cursor = 0;
 		_gestureBefore = null;
+		_current = SceneSnapshot.Capture(_objects, _zones);
+	}
+
+	/// <summary>
+	/// 丢弃"当前游标之后"那些可重做的条目，并把 <c>_current</c> 重新对齐到现场。
+	///
+	/// <b>为什么要专门有这个方法：</b>撤销之后留在时间线上的那截"可重做"
+	/// 会改变<b>下一次记录的行为</b> —— 新操作走的是"在时间线中间写入 → 截断掉后面"
+	/// 那条路（与所有编辑器一致），于是历史条数<b>原地不动</b>。
+	/// 对用户来说这完全正确；对自检来说却是灾难：
+	/// 探针"测完就撤销"会把时间线留在中间，下一个探针按"条数涨了没有"判断，
+	/// 就会把一次正常记录数成 0 —— 症状是"每条入口的标签都对、条数全是 0"。
+	///
+	/// 这个方法把那种残留收干净：截断尾巴，然后<b>重新抓一份当前状态</b>当基准
+	/// （不能只截断 —— 尾巴一去，<c>_current</c> 就指向一个已经不存在的"重做结果"，
+	/// 下一次记录会把"从那个幻影到现在的差异"记成一条）。
+	///
+	/// 它同时也是一件正经产品能力：M5 换存档 / 读档之后，旧的重做链本来就必须作废。
+	/// </summary>
+	public void DiscardRedo()
+	{
+		if (_cursor < _entries.Count)
+		{
+			TruncatedRedoCount += _entries.Count - _cursor;
+			_entries.RemoveRange(_cursor, _entries.Count - _cursor);
+		}
+
 		_current = SceneSnapshot.Capture(_objects, _zones);
 	}
 

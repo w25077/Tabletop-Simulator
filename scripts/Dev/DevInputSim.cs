@@ -133,10 +133,35 @@ internal static class DevInputSim
 
 	/// <summary>合成一次右键轻点（用于弹上下文菜单）。</summary>
 	internal static async Task RightClick(Node host, BoardCamera cam, TabletopObject obj)
+		=> await RightClickAt(host, cam.WorldToScreen(obj.Position));
+
+	/// <summary>
+	/// 按<b>屏幕坐标</b>右键轻点。
+	///
+	/// 与 <see cref="RightClick"/> 的区别不只是多一个重载：后者从物件的
+	/// <c>Position</c> 反算屏幕点，而"我要点的是这个世界坐标"与"我要点的是这个物件"
+	/// 是两回事 —— 骰子这类物件被拖动过、或光标正压在它边缘时，
+	/// 两者算出来的命中结果可能不同（命中判定用的是鼠标落点，不是物件中心）。
+	/// </summary>
+	internal static async Task RightClickAt(Node host, Vector2 screenPos)
 	{
-		Vector2 pos = cam.WorldToScreen(obj.Position);
-		PushButton(pos, MouseButton.Right, true);
-		PushButton(pos, MouseButton.Right, false);
+		PushButton(screenPos, MouseButton.Right, true);
+		PushButton(screenPos, MouseButton.Right, false);
+		await Frame(host);
+	}
+
+	/// <summary>
+	/// 合成一次左键轻点（按下即松开、中间不移动）。
+	///
+	/// 与 <see cref="DragToScreen"/> 的区别是<b>它不越过拖动阈值</b>，
+	/// 于是走的是"点击"那条分支 —— 轻点骰子掷骰靠的正是这一条
+	/// （<c>ViewportController</c> 判定没拖动也会补发一次 <c>PrimaryReleased</c>）。
+	/// </summary>
+	internal static async Task ClickAt(Node host, Vector2 screenPos)
+	{
+		PushButton(screenPos, MouseButton.Left, true);
+		await Frame(host);
+		PushButton(screenPos, MouseButton.Left, false);
 		await Frame(host);
 	}
 

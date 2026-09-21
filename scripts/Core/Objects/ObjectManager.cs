@@ -85,6 +85,19 @@ public partial class ObjectManager : Node2D, IWorldPicker, IWheelHandler
 	/// </summary>
 	private string _lastDropLabel = "";
 
+	/// <summary>
+	/// 这次手势是否<b>已经自己记过历史</b>了（目前的唯一来源是"轻点骰子掷骰"）。
+	///
+	/// <see cref="UndoSystem.EndGesture"/> 会读它，是则跳过收尾那一条 ——
+	/// 否则一次点击产出两条历史，<c>Ctrl+Z</c> 要按两次才回到点之前。
+	///
+	/// 生命周期：<see cref="OnPrimaryReleased"/> 开头复位、记录那一刻置位，
+	/// 而 <c>EndGesture</c> 在<b>同一次信号</b>里紧跟着读它（见 Main 的接线顺序）。
+	/// </summary>
+	internal bool DropAlreadyRecorded => _dropAlreadyRecorded;
+
+	private bool _dropAlreadyRecorded;
+
 	// ------------------------------------------------------------------ 属性
 
 	/// <summary>
@@ -510,7 +523,9 @@ public partial class ObjectManager : Node2D, IWorldPicker, IWheelHandler
 	{
 		// 一次手势的落点描述（撤销历史里的那一行文字）。
 		// 在这里统一重置：它描述的是"刚结束的这一次手势"，不能沿用上一次的。
+		// "这次手势自己记过历史了吗"一并复位 —— 否则上一点击的标记会漏到下一次。
 		_lastDropLabel = "";
+		_dropAlreadyRecorded = false;
 
 		if (_boxSelecting)
 		{
@@ -567,6 +582,16 @@ public partial class ObjectManager : Node2D, IWorldPicker, IWheelHandler
 			// 轻点骰子即掷 —— 掷骰是高频操作，不该逼人去右键菜单里翻
 			single.Roll();
 			_lastDropLabel = $"掷骰 {string.Join("/", single.Values)}";
+
+			// <b>轻点掷骰自己就是一条历史</b>（M4 第 4 步）。
+			//
+			// 这次手势没有"拖动"，所以它不属于"一次拖拽 = 一条历史"那套：
+			// 用户在骰子上点了一下，意图就是"掷"，那一下本身就该能撤。
+			//
+			// 记完之后<b>不让 EndGesture 再记</b>：否则同一次点击会产出两条
+			// （"掷骰 3" + "移动 1 个物件"），用户按一次 Ctrl+Z 只退掉一半。
+			RecordHistory(_lastDropLabel);
+			_dropAlreadyRecorded = true;
 		}
 
 		_dragging.Clear();
@@ -1777,21 +1802,53 @@ public partial class ObjectManager : Node2D, IWorldPicker, IWheelHandler
 				DeleteSelection();
 				break;
 			case MenuId.PullFromPile:
-				foreach (TabletopObject obj in _selection.ToArray())
-					DetachFromPile(obj, keepPosition: false);
-				ApplyDrawOrder();
-				break;
-			case MenuId.DissolvePile:
-				foreach (TabletopObject obj in _selection.ToArray())
-					DissolvePile(obj);
-				break;
-			case MenuId.RollDice:
-				foreach (TabletopObject obj in _selection)
 				{
-					if (obj is DiceObject d)
-						d.Roll();
+					int pulled = 0;
+					foreach (TabletopObject obj in _selection.ToArray())
+					{
+						DetachFromPile(obj, keepPosition: false);
+						pulled++;
+					}
+
+					ApplyDrawOrder();
+
+					// 拆堆也要进历史（M4 第 4 步）：否则"我把它从堆里抽出来"这一步撤不掉，
+					// 而那一步往往正是发现"抽错了"的那一刻。
+					if (pulled > 0)
+						RecordHistory($"从堆中取出 {pulled} 个物件");
+					break;
 				}
-				break;
+
+			case MenuId.DissolvePile:
+				{
+					int dissolved = 0;
+					foreach (TabletopObject obj in _selection.ToArray())
+					{
+						DissolvePile(obj);
+						dissolved++;
+					}
+
+					if (dissolved > 0)
+						RecordHistory($"拆散 {dissolved} 个物件所在的堆");
+					break;
+				}
+
+			case MenuId.RollDice:
+				{
+					var rolled = new List<string>();
+					foreach (TabletopObject obj in _selection)
+					{
+						if (obj is DiceObject d)
+						{
+							d.Roll();
+							rolled.Add(string.Join("/", d.Values));
+						}
+					}
+
+					if (rolled.Count > 0)
+						RecordHistory($"掷骰 {string.Join("、", rolled)}");
+					break;
+				}
 		}
 	}
 
