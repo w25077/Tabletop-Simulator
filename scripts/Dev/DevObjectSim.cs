@@ -15,7 +15,7 @@ namespace TabletopSimulator.Dev;
 internal static class DevObjectSim
 {
 	internal static async Task<Godot.Collections.Dictionary> Probe(
-		Node host, BoardCamera cam, ViewportController vc, ObjectManager objects)
+		Node host, BoardCamera cam, ViewportController vc, ObjectManager objects, ZoneManager? zones = null)
 	{
 		var r = new Godot.Collections.Dictionary();
 		r["object_count_before"] = objects.ObjectCount;
@@ -26,12 +26,26 @@ internal static class DevObjectSim
 			return r;
 		}
 
+		// "没条件跑"和"跑挂了"必须能区分开：这里返回的字典里<b>刻意不写 pass</b>，
+		// 读报告的人看到"没有 pass"就知道这一节根本没执行。
+		// 近景截图（--zoom 1）下桌面大部分在视口外，正是这种情况。
+		int looseOnScreen = DevInputSim.CountLooseOnScreen(objects, cam);
+		r["loose_on_screen"] = looseOnScreen;
+
+		if (looseOnScreen < 2)
+		{
+			r["skipped"] = $"屏幕内的散件只有 {looseOnScreen} 个，而本节需要至少 2 个当靶子"
+				+ "（拖拽 / 堆叠 / 框选都以此为前提）。多半是视角被放大到只看得到桌面一角 —— "
+				+ "请用默认的整桌视角重跑，或把 --center 指到有散件的地方。";
+			return r;
+		}
+
 		// 各步骤互相影响，所以每步都用"按当前状态重新挑目标"的方式，
 		// 而不是一开始抓引用 —— 拖拽之后位置就变了。
-		await DragToEmptyArea(host, cam, objects, r);
+		await DragToEmptyArea(host, cam, objects, zones, r);
 		await RotateAndFlip(host, cam, objects, r);
 		await FormPile(host, cam, objects, r);
-		await BoxSelect(host, cam, objects, r);
+		await BoxSelect(host, cam, objects, zones, r);
 		await RollDice(host, cam, objects, r);
 
 		r["object_count_after"] = objects.ObjectCount;
@@ -44,7 +58,8 @@ internal static class DevObjectSim
 	// ------------------------------------------------------------------ 1. 拖拽
 
 	/// <summary>把一张散件卡拖到真空中，断言位移精确等于「屏幕位移 / 缩放」。</summary>
-	private static async Task DragToEmptyArea(Node host, BoardCamera cam, ObjectManager objects, Godot.Collections.Dictionary r)
+	private static async Task DragToEmptyArea(
+		Node host, BoardCamera cam, ObjectManager objects, ZoneManager? zones, Godot.Collections.Dictionary r)
 	{
 		CardObject? card = FindLooseCard(objects, cam);
 		if (card is null)
@@ -54,7 +69,12 @@ internal static class DevObjectSim
 			return;
 		}
 
-		Vector2 target = cam.ScreenToWorld(DevInputSim.FindEmptyScreenPoint(cam, objects));
+		(Vector2 emptyScreen, float clearance) = DevInputSim.FindEmptiestScreenPoint(cam, objects, zones);
+		Vector2 target = cam.ScreenToWorld(emptyScreen);
+
+		// 把"这个落点到底有多空"写进报告。它是这条断言的可信度依据：
+		// 间隙接近 0 就说明落点其实贴着别的物件，"位移精确等于鼠标位移"即使通过也说明不了什么。
+		r["drag_drop_clearance_px"] = clearance;
 		Vector2 startPos = card.Position;
 		Vector2 startScreen = cam.WorldToScreen(startPos);
 
@@ -158,9 +178,10 @@ internal static class DevObjectSim
 	/// 从卡牌旁边的空白处拖出一个罩住它的框，断言：
 	/// 选中数变多、且过程中物件<b>没有被拖走</b>（框选绝不该移动物件）。
 	/// </summary>
-	private static async Task BoxSelect(Node host, BoardCamera cam, ObjectManager objects, Godot.Collections.Dictionary r)
+	private static async Task BoxSelect(
+		Node host, BoardCamera cam, ObjectManager objects, ZoneManager? zones, Godot.Collections.Dictionary r)
 	{
-		CardObject? card = FindLooseCard(objects, cam);
+		CardObject? card = FindLooseCard(objects, cam, requireFaceUp: false);
 		if (card is null)
 		{
 			r["box_select_ok"] = false;
@@ -172,7 +193,7 @@ internal static class DevObjectSim
 		await DevInputSim.Frame(host);
 
 		Vector2 cardScreen = cam.WorldToScreen(card.Position);
-		Vector2? startScreen = DevInputSim.FindEmptyScreenPointNear(cam, objects, cardScreen, 420f);
+		Vector2? startScreen = DevInputSim.FindEmptyScreenPointNear(cam, objects, cardScreen, 420f, zones);
 
 		if (startScreen is null)
 		{
@@ -281,7 +302,16 @@ internal static class DevObjectSim
 		DevInputSim.PushButton(startScreen + totalScreenDelta, MouseButton.Left, false);
 	}
 
-	private static CardObject? FindLooseCard(ObjectManager objects, BoardCamera cam)
+	/// <summary>
+	/// 挑一张"散件卡"当靶子。
+	/// </summary>
+	/// <param name="requireFaceUp">
+	/// 是否需要正面朝上。拖拽/旋转/翻面这些步骤要它，因为盖放的牌看不到内容；
+	/// 但<b>框选不需要</b> —— 框选只要求"这张牌能被框住"，正面背面都一样。
+	/// 曾经因为这里一刀切要求正面，前面几步把仅有的 5 张正面散件消耗光之后
+	/// （翻面 1 张、并堆 2 张），框选就在自己的里程碑里莫名其妙地红了。
+	/// </param>
+	private static CardObject? FindLooseCard(ObjectManager objects, BoardCamera cam, bool requireFaceUp = true)
 	{
 		for (int i = objects.AllObjects.Count - 1; i >= 0; i--)
 		{
@@ -289,7 +319,13 @@ internal static class DevObjectSim
 
 			// 必须挑屏幕上看得见的：前面的步骤可能把物件拖到视口之外，
 			// 对它合成点击会落在视口外，得到毫无意义的失败。
-			if (obj is CardObject card && card.PileId == 0 && card.Visible && !card.IsFaceDown
+			//
+			// M3 起还要排除区域成员：牌库最上面那几张牌同样满足 "PileId == 0 && Visible"，
+			// 但它们的位置由区域排版决定、还可能在牌库矩形里，拿它们当"散件"去拖
+			// 会拖出区域、并让断言测的东西和名字对不上。
+			if (obj is CardObject card && card.ZoneId == "" && card.PileId == 0
+				&& card.Visible
+				&& (!requireFaceUp || !card.IsFaceDown)
 				&& DevInputSim.IsOnScreen(cam, card.Position))
 				return card;
 		}
@@ -297,6 +333,7 @@ internal static class DevObjectSim
 		return null;
 	}
 
+	/// <summary>拆分卡牌：散件（可自由拖动的靶子） vs 已在堆里的。</summary>
 	private static (List<CardObject> Loose, List<CardObject> Piled) SplitCards(ObjectManager objects)
 	{
 		var loose = new List<CardObject>();
@@ -304,7 +341,8 @@ internal static class DevObjectSim
 
 		foreach (TabletopObject obj in objects.AllObjects)
 		{
-			if (obj is not CardObject card || !card.Visible)
+			// 区域成员一律不算散件 —— 它们的位置归区域管，不是"能随便拖的靶子"。
+			if (obj is not CardObject card || !card.Visible || card.ZoneId != "")
 				continue;
 
 			if (card.PileId == 0)

@@ -40,7 +40,34 @@ public partial class DevCapture : Node
 			return;
 		}
 
-		_ = CaptureAsync(shotPath, CmdLine.GetInt(FlagFrames, 30), CmdLine.HasFlag(FlagExit));
+		_ = RunAsync(shotPath, CmdLine.GetInt(FlagFrames, 30), CmdLine.HasFlag(FlagExit));
+	}
+
+	/// <summary>
+	/// 包一层异常处理。<b>这不是可选的礼貌，是必须的。</b>
+	///
+	/// <see cref="CaptureAsync"/> 是"发射后不管"启动的（<c>_ = ...</c>），
+	/// 它的 <c>Task</c> 没人 await。于是里面任何一处抛异常，都会被静静地吞进
+	/// 那个 Task 里：<b>自检既不打日志、也不退出，进程就那么挂到天荒地老</b>。
+	/// 排查时看到的现象只有"跑不完"，完全不知道是哪一步炸了 ——
+	/// 这一轮就为此白等了一次十分钟的超时。
+	///
+	/// 所以这里显式接住、打出来、并按 <c>--shot-exit</c> 退出。
+	/// </summary>
+	private async Task RunAsync(string shotPath, int frames, bool quitAfter)
+	{
+		try
+		{
+			await CaptureAsync(shotPath, frames, quitAfter);
+		}
+		catch (System.Exception e)
+		{
+			GD.PrintErr($"[DevCapture] 自检抛异常，已中止：{e.GetType().Name}: {e.Message}");
+			GD.PrintErr(e.StackTrace ?? "(无堆栈)");
+
+			if (quitAfter)
+				GetTree().Quit(2);
+		}
 	}
 
 	/// <summary>
@@ -117,6 +144,11 @@ public partial class DevCapture : Node
 	{
 		// 注意是场景树根（Window），不是 this —— DevCapture 自己是 Main 的子节点。
 		Node root = GetTree().Root;
+
+		// 每个阶段前后都打一行。这些打点不是装饰：自检一旦卡住（死循环、await 永不返回），
+		// 没有它们就只能看到"进程不退出"，完全不知道该看哪一段代码。
+		// shot.ps1 会把 [DevCapture] 开头的行原样打出来，于是卡在哪一步一眼可见。
+		GD.Print("[DevCapture] phase: report build");
 		Godot.Collections.Dictionary report = DevReport.Build(root, GetViewport().GetTexture().GetImage());
 
 		Node? main = root.GetNodeOrNull("Main");
@@ -124,13 +156,40 @@ public partial class DevCapture : Node
 			main.GetNodeOrNull("ViewportController") is ViewportController vc)
 		{
 			ObjectManager? objects = main.GetNodeOrNull<ObjectManager>("Objects");
+			ZoneManager? zones = main.GetNodeOrNull<ZoneManager>("Zones");
 
+			GD.Print("[DevCapture] phase: input simulation");
 			report["input_simulation"] = await DevInputSim.CameraAndPointerProbe(this, cam, vc, objects);
 
 			if (objects is not null)
 			{
-				report["object_simulation"] = await DevObjectSim.Probe(this, cam, vc, objects);
-				report["sequence_simulation"] = await DevSequenceSim.Probe(this, cam, vc, objects);
+				// 区域的顺序断言要跑在物件/顺序断言<b>之前</b>：
+				// 后两者会大量拖拽、成堆、甚至把物件数翻倍（全选复制），
+				// 跑完之后桌面已经不是"一局刚开始"的样子了。
+				// 区域那条循环断言的语义是"从开局跑通一局"，所以它得先来。
+				if (zones is not null)
+				{
+					GD.Print("[DevCapture] phase: zone simulation");
+					report["zone_simulation"] = await DevZoneSim.Probe(this, cam, objects, zones);
+				}
+				else
+				{
+					GD.Print("[DevCapture] phase: zone simulation SKIPPED (Main/Zones 上没有 ZoneManager)");
+				}
+
+				GD.Print("[DevCapture] phase: object simulation");
+				report["object_simulation"] = await DevObjectSim.Probe(this, cam, vc, objects, zones);
+
+				GD.Print("[DevCapture] phase: sequence simulation");
+				report["sequence_simulation"] = await DevSequenceSim.Probe(this, cam, vc, objects, zones);
+
+				// 拆桌检查放最后：它是<b>破坏性</b>的（清空所有区域），
+				// 放在前面会让后面几节没东西可测 —— 探针之间不该互相拆台。
+				if (zones is not null)
+				{
+					GD.Print("[DevCapture] phase: zone teardown");
+					report["zone_teardown"] = await DevZoneSim.VerifyTeardown(this, objects, zones);
+				}
 			}
 		}
 		else
@@ -141,6 +200,7 @@ public partial class DevCapture : Node
 			};
 		}
 
+		GD.Print("[DevCapture] phase: write json");
 		string json = Json.Stringify(report, "  ");
 
 		string reportPath = shotPath + ".report.json";

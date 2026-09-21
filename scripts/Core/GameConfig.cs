@@ -34,6 +34,22 @@ public static class GameConfig
 	/// <summary>鼠标按下后移动超过这个像素数才算"拖拽"，否则算"点击"。</summary>
 	public const float DragThresholdPixels = 5.0f;
 
+	/// <summary>
+	/// 双击的时间窗口（秒）。两次"点击"（按下→松开且未越过拖拽阈值）间隔小于它、且落点几乎不动，
+	/// 才算一次双击。
+	///
+	/// <b>为什么自己判定而不用 <c>InputEventMouseButton.DoubleClick</c></b>：
+	/// 那个标志由 DisplayServer 层填写，而自检是把合成事件直接塞进
+	/// <c>Input.ParseInputEvent</c> 的，根本走不到那一层。用它的话，
+	/// 双击抽牌在真机上能用、在自检里永远触发不了 —— 于是这条最关键的新交互
+	/// 就成了"自检覆盖不到的盲区"。自己判定的代价只是十余行代码，换来的是
+	/// 合成事件与真实鼠标走完全相同的代码路径。
+	/// </summary>
+	public const double DoubleClickSeconds = 0.35;
+
+	/// <summary>双击判定允许的落点漂移（屏幕像素）。超过它就算两次独立的点击。</summary>
+	public const float DoubleClickMaxDriftPixels = 8.0f;
+
 	// ---- 物件外观 ----
 	/// <summary>悬停描边色（仅在没有更明确的操作目标时使用）。</summary>
 	public static readonly Color HoverOutline = new("#88c0d0");
@@ -79,4 +95,39 @@ public static class GameConfig
 	public const float KeyRotateStepDegrees = 15f;
 	/// <summary>Alt+滚轮每格旋转的角度。</summary>
 	public const float WheelRotateStepDegrees = 3f;
+
+	// ---- 区域（M3）----
+	/// <summary>区域边框粗细。</summary>
+	public const float ZoneBorderWidth = 2f;
+
+	/// <summary>空区域 / 锁定区域的边框透明度。比正常边框淡，一眼看出"这里还没东西"。</summary>
+	public const float ZoneIdleBorderAlpha = 0.28f;
+
+	/// <summary>区域名称与张数的字号。</summary>
+	public const int ZoneTitleFontSize = 24;
+
+	/// <summary>区域内容的内边距（世界单位）—— 排版时不能贴着边框。</summary>
+	public const float ZonePadding = 26f;
+
+	/// <summary>
+	/// 横排（<c>ZoneSortMode.Row</c>）时相邻两张卡的水平间距。
+	/// 12 是按"手牌区要装下 10 张 300 宽的卡 + 两侧内边距"反推的上限（见 <c>ZoneDefaults.HandZoneSize</c>），
+	/// 再大就会撑出区域。
+	/// </summary>
+	public const float ZoneRowGap = 12f;
+
+	/// <summary>横排时相邻两行的垂直间距。</summary>
+	public const float ZoneRowLineGap = 20f;
+
+	/// <summary>扇形（<c>ZoneSortMode.Fan</c>）时相邻两张的水平间距。比横排窄，才有叠压感。</summary>
+	public const float ZoneFanGap = 90f;
+
+	/// <summary>扇形最边缘那张的旋转角（度）。中间那张为 0°，向两侧对称张开。</summary>
+	public const float ZoneFanMaxDegrees = 9f;
+
+	/// <summary>容量已满 / 锁定时，区域边框改用的警示色。</summary>
+	public static readonly Color ZoneBlockedBorder = new("#bf616a");
+
+	/// <summary>区域名称文字色。</summary>
+	public static readonly Color ZoneTitleColor = new("#e5e9f0");
 }

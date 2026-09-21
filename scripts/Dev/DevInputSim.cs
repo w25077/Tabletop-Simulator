@@ -1,6 +1,7 @@
 using System.Threading.Tasks;
 using Godot;
 using TabletopSimulator.Core;
+using TabletopSimulator.Core.Objects;
 
 namespace TabletopSimulator.Dev;
 
@@ -78,49 +79,115 @@ internal static class DevInputSim
 	}
 
 	/// <summary>
-	/// 找一块真正空着的屏幕点。
-	/// 测试里<b>绝不能写死坐标</b> —— 桌面内容一变，写死的点就可能压在卡上，
-	/// 于是"点空白"根本没发生，断言假失败（这个坑 M2 第一版就踩了）。
+	/// 合成一次双击。
+	///
+	/// 注意<b>不设</b> <c>DoubleClick</c> 标志：那个标志由 DisplayServer 层填写，
+	/// 走 <c>Input.ParseInputEvent</c> 根本到不了那一层。而 <c>ViewportController</c>
+	/// 的双击判定是自己按"两次未拖动的点击 + 时间 + 位移"算的
+	/// （见 <c>GameConfig.DoubleClickSeconds</c>），所以这里只要老老实实发两对
+	/// 按下/松开，走的就是和真实鼠标完全相同的那条路径。
+	///
+	/// 代价：同一帧里发两次会被 <c>Time.GetTicksMsec()</c> 看成 0 毫秒间隔，
+	/// 依然在窗口内，所以是成立的 —— 但为了贴近真实手感，中间让一帧。
 	/// </summary>
-	internal static Vector2 FindEmptyScreenPoint(BoardCamera cam, Core.Objects.ObjectManager objects)
+	internal static async Task PushDoubleClick(Node host, Vector2 pos, MouseButton button = MouseButton.Left)
+	{
+		PushButton(pos, button, true);
+		PushButton(pos, button, false);
+		await Frame(host);
+
+		PushButton(pos, button, true);
+		PushButton(pos, button, false);
+		await Frame(host);
+	}
+
+	/// <summary>
+	/// 在整屏范围里找<b>最空</b>的一个屏幕点：既没有物件压在下面，也不在任何区域矩形内。
+	/// 返回值附带"到最近可见物件的间隙（世界单位）"，让调用方能把空缺程度写进报告。
+	///
+	/// 为什么是"求最空"而不是"取第一个通过的"：
+	/// 早先的写法是从屏幕边缘往里扫、撞到第一个满足条件的点就返回，扫不到就<b>猜</b>一个
+	/// <c>(中心, 视口 92%)</c>。M3 加了下带的手牌区之后，那个猜出来的点正好落在手牌区里、
+	/// 而且上面还压着一张卡 —— 于是三处断言同时变红（拖拽位移、悬停移开取消选中、
+	/// 从牌库拖到桌面），而症状看起来毫无关联、根本猜不到是同一个坐标在作祟。
+	///
+	/// 改成全局最优之后，"兜底猜一个"这条路径就不存在了：只要屏幕上还有一寸空地，
+	/// 拿到的就是那一寸；实在没有，返回值里的间隙会诚实地告诉调用方"这里并不空"。
+	///
+	/// 代价是一次约 3000 个候选点的扫描，每个候选要问一遍拾取与包围盒 ——
+	/// 对 36 个物件的桌面是毫秒级，完全可接受。
+	/// </summary>
+	internal static (Vector2 Screen, float Clearance) FindEmptiestScreenPoint(
+		BoardCamera cam, ObjectManager objects, ZoneManager? zones = null)
 	{
 		Vector2 viewport = cam.GetViewportRect().Size;
 
-		// 从靠边的位置往中间扫，优先拿到远离物件的点
-		for (float ty = 0.88f; ty >= 0.2f; ty -= 0.08f)
+		// 避开顶栏与底部提示条 —— 那些地方会被 HUD 控件吃掉
+		const float MarginTop = 60f;
+		const float MarginBottom = 118f;
+		const float MarginSide = 24f;
+		const float Step = 24f;
+
+		Vector2 best = new(viewport.X * 0.5f, viewport.Y * 0.5f);
+		float bestClearance = -1f;
+		int candidates = 0;
+
+		for (float y = MarginTop; y <= viewport.Y - MarginBottom; y += Step)
 		{
-			for (float tx = 0.08f; tx <= 0.92f; tx += 0.06f)
+			for (float x = MarginSide; x <= viewport.X - MarginSide; x += Step)
 			{
-				var screen = new Vector2(viewport.X * tx, viewport.Y * ty);
+				var screen = new Vector2(x, y);
 				Vector2 world = cam.ScreenToWorld(screen);
 
 				if (objects.PickTopmost(world) is not null)
 					continue;
 
-				// 半径内也没有物件才算"真空"（拖过去不会意外堆叠）
-				if (HasObjectNear(objects, world, 520f))
+				if (zones is not null && zones.ZoneAtWorld(world) is not null)
 					continue;
 
-				return screen;
+				candidates++;
+
+				float clearance = ClearanceToNearestObject(objects, world);
+				if (clearance > bestClearance)
+				{
+					bestClearance = clearance;
+					best = screen;
+				}
 			}
 		}
 
-		return new Vector2(viewport.X * 0.5f, viewport.Y * 0.92f);
+		return (best, candidates > 0 ? Mathf.Max(bestClearance, 0f) : -1f);
 	}
 
-	internal static bool HasObjectNear(Core.Objects.ObjectManager objects, Vector2 world, float radius)
+	/// <summary>该世界点到最近一个可见物件包围盒的间隙（落在某个包围盒里则为 0）。</summary>
+	internal static float ClearanceToNearestObject(ObjectManager objects, Vector2 world)
 	{
-		foreach (Core.Objects.TabletopObject obj in objects.AllObjects)
+		float nearest = float.MaxValue;
+
+		foreach (TabletopObject obj in objects.AllObjects)
 		{
 			if (!obj.Visible)
 				continue;
 
-			if (obj.GetWorldAabb().Grow(radius).HasPoint(world))
-				return true;
+			Rect2 box = obj.GetWorldAabb();
+			if (box.HasPoint(world))
+				return 0f;
+
+			// 点到矩形的最近距离
+			float dx = Mathf.Max(Mathf.Max(box.Position.X - world.X, world.X - box.End.X), 0f);
+			float dy = Mathf.Max(Mathf.Max(box.Position.Y - world.Y, world.Y - box.End.Y), 0f);
+			nearest = Mathf.Min(nearest, Mathf.Sqrt((dx * dx) + (dy * dy)));
 		}
 
-		return false;
+		return nearest == float.MaxValue ? float.MaxValue : nearest;
 	}
+
+	/// <summary>
+	/// 沿用旧签名的薄包装：返回"最空的那个点"的屏幕坐标。
+	/// 需要知道它到底有多空的调用方请直接用 <see cref="FindEmptiestScreenPoint"/>。
+	/// </summary>
+	internal static Vector2 FindEmptyScreenPoint(BoardCamera cam, ObjectManager objects, ZoneManager? zones = null)
+		=> FindEmptiestScreenPoint(cam, objects, zones).Screen;
 
 	/// <summary>
 	/// 世界点是否落在当前视口内（留出 HUD 边距）。
@@ -137,11 +204,35 @@ internal static class DevInputSim
 	}
 
 	/// <summary>
+	/// 数一下屏幕上还有几张可自由操作的散件卡（不属于任何区域、可见、且落在视口内）。
+	///
+	/// 用途是给探针一个"能不能跑"的判据。这是 M3 才暴露出来的一类问题：
+	/// 用 <c>--zoom 1</c> 出近景图时，可视范围只有 1920×1080 个世界单位，
+	/// 而桌面是 3200×2000 —— 大部分散件根本不在屏幕里。
+	/// 此时拖拽 / 悬停 / 框选这些断言会因为"找不到靶子"而失败，
+	/// 但那**不是产品有 bug，是探针没条件跑**。
+	/// 报告必须把这两件事分清楚，否则一条红会把人引向完全错误的方向。
+	/// </summary>
+	internal static int CountLooseOnScreen(ObjectManager objects, BoardCamera cam)
+	{
+		int n = 0;
+
+		foreach (TabletopObject obj in objects.AllObjects)
+		{
+			if (obj.ZoneId == "" && obj.Visible && IsOnScreen(cam, obj.Position))
+				n++;
+		}
+
+		return n;
+	}
+
+	/// <summary>
 	/// 在某个屏幕点附近找一块空位。框选测试要"起点在空白"才能触发框选，
 	/// 同时又得离目标卡够近，框才罩得住它。
 	/// </summary>
 	internal static Vector2? FindEmptyScreenPointNear(
-		BoardCamera cam, Core.Objects.ObjectManager objects, Vector2 nearScreen, float maxRadius)
+		BoardCamera cam, Core.Objects.ObjectManager objects, Vector2 nearScreen, float maxRadius,
+		ZoneManager? zones = null)
 	{
 		Vector2 viewport = cam.GetViewportRect().Size;
 
@@ -158,8 +249,17 @@ internal static class DevInputSim
 					screen.Y < 56f || screen.Y > viewport.Y - 110f)
 					continue;
 
-				if (objects.PickTopmost(cam.ScreenToWorld(screen)) is null)
-					return screen;
+				Vector2 world = cam.ScreenToWorld(screen);
+
+				if (objects.PickTopmost(world) is not null)
+					continue;
+
+				// 框选的起点若落在区域里也不算数：区域不吞左键（会正常起框选），
+				// 但"空白起点"的语义应该是不在任何东西之上，包含区域。
+				if (zones is not null && zones.ZoneAtWorld(world) is not null)
+					continue;
+
+				return screen;
 			}
 		}
 
@@ -250,7 +350,10 @@ internal static class DevInputSim
 		// 右键会弹出一个 PopupMenu，而 Popup 是 Window，会抢走后续的合成鼠标事件。
 		// 探针必须自己收尾，否则下一个探针的点击全落在菜单上 —— 表现为"结果时对时错"，
 		// 极难查。这个坑本轮就踩了一次。
-		objects?.ContextMenu?.Hide();
+		//
+		// M3 起有两个菜单：物件的与区域的。右键落点若在某个区域矩形内，
+		// 弹的是区域菜单，所以必须两个一起收 —— 只收物件菜单会漏掉一半。
+		objects?.HideAllMenus();
 		await Frame(host);
 
 		// ---------------------------------------------------------- 还原并判定

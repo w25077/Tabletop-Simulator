@@ -14,6 +14,7 @@ public partial class Hud : CanvasLayer
 	private Label _zoomLabel = null!;
 	private Label _objectLabel = null!;
 	private Label _selectionLabel = null!;
+	private Label _zoneLabel = null!;
 	private Button _gridSnapButton = null!;
 	private Button _fitButton = null!;
 	private Button _zoom100Button = null!;
@@ -34,6 +35,7 @@ public partial class Hud : CanvasLayer
 		_zoomLabel = GetNode<Label>("HudRoot/Layout/TopBar/TopRow/ZoomLabel");
 		_objectLabel = GetNode<Label>("HudRoot/Layout/TopBar/TopRow/ObjectLabel");
 		_selectionLabel = GetNode<Label>("HudRoot/Layout/TopBar/TopRow/SelectionLabel");
+		_zoneLabel = GetNode<Label>("HudRoot/Layout/TopBar/TopRow/ZoneLabel");
 		_gridSnapButton = GetNode<Button>("HudRoot/Layout/TopBar/TopRow/GridSnapButton");
 		_fitButton = GetNode<Button>("HudRoot/Layout/TopBar/TopRow/FitButton");
 		_zoom100Button = GetNode<Button>("HudRoot/Layout/TopBar/TopRow/Zoom100Button");
@@ -124,6 +126,20 @@ public partial class Hud : CanvasLayer
 
 		_gridSnapButton.ButtonPressed = enabled;
 		_gridSnapButton.Text = enabled ? "网格吸附：开" : "网格吸附：关";
+	}
+
+	/// <summary>
+	/// 区域计数（M3）。形如 <c>牌库 24 · 手牌 5 · 弃牌堆 2</c>。
+	///
+	/// 数据源是 <c>ZoneManager.ZoneCountsChanged</c>，不是在 HUD 里自己遍历区域 ——
+	/// 区域张数在抽牌 / 洗牌 / 拖入拖出后都会变，多点各自统计迟早会不一致。
+	/// </summary>
+	public void SetZoneSummary(string summary)
+	{
+		if (!IsInstanceValid(_zoneLabel))
+			return;
+
+		_zoneLabel.Text = summary;
 	}
 
 	/// <summary>底部淡出式提示（保存成功、导入失败之类）。</summary>

@@ -54,13 +54,27 @@ public partial class ObjectManager : Node2D, IWorldPicker, IWheelHandler
 	private BoardCamera _camera = null!;
 	private ViewportController _viewport = null!;
 	private SelectionBox _box = null!;
+	private Hud? _hud;
 	private PopupMenu? _menu;
-
 	// ---- 交互状态 ----
 	private TabletopObject? _hovered;
 	private bool _boxSelecting;
 	private bool _dragMoved;
 	private Vector2 _boxCursor;
+
+	/// <summary>
+	/// 本次拖拽的物件是否<b>全部刚从某个区域里取出来</b>。必须在
+	/// <see cref="OnPrimaryDragStarted"/> 里、<c>ZoneManager.BeginDrag</c> 摘除归属<b>之前</b>记录 ——
+	/// 摘完之后所有物件的 <c>ZoneId</c> 都空了，就再也问不出来。
+	///
+	/// 它的用途是区分两种"拖一把牌"：
+	/// <list type="bullet">
+	/// <item><b>从区域里取出</b>（手牌 / 牌库拿一把到桌上）→ 放下就是一把，应当叠成一摞；</item>
+	/// <item><b>在桌面上挪</b>（框选几张已排好位置的散牌换个地方）→ 只是搬家，<b>不该改变它们的排列</b>。</item>
+	/// </list>
+	/// 这两种意图在动作上一模一样，只能靠"从哪来"区分。
+	/// </summary>
+	private bool _draggingFromZones;
 
 	// ------------------------------------------------------------------ 属性
 
@@ -88,6 +102,21 @@ public partial class ObjectManager : Node2D, IWorldPicker, IWheelHandler
 	/// <summary>当前鼠标悬停的物件。它是键盘操作的优先目标。</summary>
 	public TabletopObject? Hovered => _hovered;
 
+	/// <summary>
+	/// 区域系统（M3）。<b>可空</b>：没接区域时物件系统照常工作，只是区域相关交互整体关闭。
+	///
+	/// 这里只依赖接口不依赖 <c>ZoneManager</c> 具体类型 —— 和 M1 预留
+	/// <see cref="IWorldPicker"/> / <see cref="IWheelHandler"/> 同一个套路：
+	/// 被"问"，而不是自己去抢事件或反向持有对方。
+	/// </summary>
+	public IZoneInteraction? Zones
+	{
+		get => _zones;
+		set => _zones = value;
+	}
+
+	private IZoneInteraction? _zones;
+
 	[Signal] public delegate void SelectionChangedEventHandler(int count);
 	[Signal] public delegate void ObjectCountChangedEventHandler(int count);
 	[Signal] public delegate void GridSnapChangedEventHandler(bool enabled);
@@ -100,6 +129,7 @@ public partial class ObjectManager : Node2D, IWorldPicker, IWheelHandler
 		_camera = camera;
 		_viewport = viewport;
 		_box = box;
+		_hud = hudLayer as Hud;
 
 		viewport.Picker = this;
 		viewport.WheelHandler = this;
@@ -110,6 +140,7 @@ public partial class ObjectManager : Node2D, IWorldPicker, IWheelHandler
 		viewport.PrimaryReleased += OnPrimaryReleased;
 		viewport.EmptyAreaClicked += OnEmptyAreaClicked;
 		viewport.ContextMenuRequested += OnContextMenuRequested;
+		viewport.PrimaryDoubleClicked += OnPrimaryDoubleClicked;
 		viewport.PointerMoved += OnPointerMoved;
 
 		_menu = new PopupMenu { Name = "ObjectMenu" };
@@ -164,6 +195,9 @@ public partial class ObjectManager : Node2D, IWorldPicker, IWheelHandler
 	/// <summary>清空桌面上的所有物件。</summary>
 	public void ClearAll()
 	{
+		// 先让区域松手，否则 Zone.Members 会留着即将释放的节点引用
+		_zones?.ForgetObjects(new List<TabletopObject>(_drawOrder));
+
 		foreach (TabletopObject obj in _drawOrder)
 			obj.QueueFree();
 
@@ -206,25 +240,31 @@ public partial class ObjectManager : Node2D, IWorldPicker, IWheelHandler
 
 	private void OnPointerMoved(Vector2 worldPos)
 	{
+		// 区域先更新"悬停的是哪个区域"（S 洗牌 / D 抽牌的落点靠它）。
+		// 无返回值、不影响下面的物件悬停逻辑 —— 两者各自维护自己的悬停对象。
+		_zones?.NotifyPointerMoved(worldPos);
+
 		if (_boxSelecting)
 			return;
 
 		TabletopObject? hit = PickTopmostExcluding(worldPos, _dragging.Count > 0 ? _dragging : null);
-		if (ReferenceEquals(hit, _hovered))
-			return;
+		bool hoverChanged = !ReferenceEquals(hit, _hovered);
 
-		if (_hovered is not null && IsInstanceValid(_hovered))
+		if (hoverChanged)
 		{
-			_hovered.IsHovered = false;
-			_hovered.QueueRedraw();
-		}
+			if (_hovered is not null && IsInstanceValid(_hovered))
+			{
+				_hovered.IsHovered = false;
+				_hovered.QueueRedraw();
+			}
 
-		_hovered = hit;
+			_hovered = hit;
 
-		if (_hovered is not null)
-		{
-			_hovered.IsHovered = true;
-			_hovered.QueueRedraw();
+			if (_hovered is not null)
+			{
+				_hovered.IsHovered = true;
+				_hovered.QueueRedraw();
+			}
 		}
 
 		// 鼠标离开物件 → 取消选中。
@@ -238,6 +278,11 @@ public partial class ObjectManager : Node2D, IWorldPicker, IWheelHandler
 		//   2. 多选（框选 / Ctrl+点选）—— 那是用户刻意建立的集合，
 		//      不该被一次鼠标移动就冲掉，否则框选完立刻失效。
 		//      多选要取消用 Esc 或点空白。
+		//
+		// 注意这一步<b>不能</b>塞进上面的 `if (hoverChanged)` 里。
+		// 早先这里是个"悬停没变就整体 return"的优化，于是当鼠标本来就没悬停任何东西
+		// （合成输入、或程序化设置选中集）时，"移到空白处取消选中"整条逻辑被跳过 ——
+		// 单选会一直留着。悬停变化的判断只该管描边，不该管选中。
 		if (hit is null && _dragging.Count == 0 && _selection.Count == 1)
 		{
 			ClearSelectionInternal();
@@ -245,7 +290,8 @@ public partial class ObjectManager : Node2D, IWorldPicker, IWheelHandler
 		}
 
 		// 悬停就是"指着的那张"，操作目标随之变化，描边要跟着变
-		RefreshActionTargets();
+		if (hoverChanged)
+			RefreshActionTargets();
 	}
 
 	private void OnPrimaryPressed(Vector2 worldPos)
@@ -325,7 +371,52 @@ public partial class ObjectManager : Node2D, IWorldPicker, IWheelHandler
 		}
 
 		// 有物件 → 拖拽置顶，并让被拖的堆整体离开原层级
+		// 区域成员也要在起点就脱离区域：落点可能不在任何区域里，
+		// 那时若还留着 ZoneId 就成了"还在牌库里、位置却在桌面"的半截状态。
+		//
+		// 顺序有讲究：必须<b>先</b>问"是不是全从区域里来的"，再让区域摘除归属 ——
+		// 摘完就没法判断了。
+		_draggingFromZones = AllCameFromZone(_dragging);
+
+		_zones?.BeginDrag(_dragging);
 		BringToFront(_dragging);
+	}
+
+	/// <summary>一组物件是否全部来自区域（每一张拖拽前都有 ZoneId）。少于 2 张时返回 false。</summary>
+	private static bool AllCameFromZone(IReadOnlyList<TabletopObject> objects)
+	{
+		if (objects.Count < 2)
+			return false;
+
+		foreach (TabletopObject obj in objects)
+		{
+			if (string.IsNullOrEmpty(obj.ZoneId))
+				return false;
+		}
+
+		return true;
+	}
+
+	/// <summary>这组物件是否恰好就是桌面上已有的某一个自由堆的全部成员（"拖整堆"）。</summary>
+	private bool IsExactlyOneExistingPile(IReadOnlyList<TabletopObject> objects)
+	{
+		if (objects.Count < 2)
+			return false;
+
+		int pileId = objects[0].PileId;
+		if (pileId == 0 || !_piles.TryGetValue(pileId, out Pile? pile))
+			return false;
+
+		if (pile.Count != objects.Count)
+			return false;
+
+		foreach (TabletopObject obj in objects)
+		{
+			if (obj.PileId != pileId)
+				return false;
+		}
+
+		return true;
 	}
 
 	private void OnPrimaryDragged(Vector2 worldDelta)
@@ -379,10 +470,15 @@ public partial class ObjectManager : Node2D, IWorldPicker, IWheelHandler
 
 		if (_dragMoved)
 		{
-			if (GridSnapEnabled)
-				SnapToGrid(_dragging);
+			// 落点在区域里 → 由区域定夺（接受则归位并改朝向，被拒则原地不动）。
+			// 必须放在自由堆逻辑之前：否则一张牌会被"区域收下"和"和桌上的牌粘成一堆"同时处理。
+			if (_zones is null || !_zones.TryHandleDrop(_dragging, worldPos))
+			{
+				if (GridSnapEnabled)
+					SnapToGrid(_dragging);
 
-			TryMergeAfterDrop();
+				TryMergeAfterDrop(worldPos);
+			}
 		}
 		else if (_selection.Count == 1 && _selection[0] is DiceObject single)
 		{
@@ -405,8 +501,46 @@ public partial class ObjectManager : Node2D, IWorldPicker, IWheelHandler
 		_draggingPiles.Clear();
 	}
 
-	/// <summary>松手后：如果最上面那张压在了别的物件上，就并成一堆。</summary>
-	private void TryMergeAfterDrop()
+	/// <summary>
+	/// 左键双击。<b>这里刻意让区域优先于物件</b>，和右键的规则相反，原因很实际：
+	/// 牌库最上面那几张牌正好压在自己的矩形中心，双击"牌库"时命中的几乎总是那张顶牌，
+	/// 而不是区域本身。若按"物件优先"，抽牌这个 M3 最核心的操作就永远触发不了。
+	/// 只有 <see cref="Data.ZoneDefinition.DrawOnDoubleClick"/> 为真的区域会接管，所以不误伤。
+	/// </summary>
+	private void OnPrimaryDoubleClicked(Vector2 worldPos)
+	{
+		_zones?.TryHandleDoubleClick(worldPos);
+	}
+
+	/// <summary>
+	/// 松手后决定这组物件成不成堆。
+	///
+	/// <summary>
+	/// 松手后决定这组物件要不要成堆。<b>先看"拖的是什么"，再看"落在哪"。</b>
+	///
+	/// <list type="number">
+	/// <item><b>只有一张</b>（M2 语义，不变）：压到别的物件上 → 并进它；
+	///   落在空地 → 脱离原堆，变成散件。</item>
+	///
+	/// <item><b>整组恰好是桌面上已有的一个堆</b>（拖整堆）：
+	///   压到别的物件上 → 并堆（把两堆合成一堆，这是刻意的）；
+	///   落在空地 → 只是换了个位置，堆保持不变。</item>
+	///
+	/// <item><b>其余的一把多张</b>（框选几张散牌）：
+	///   <list type="bullet">
+	///   <item>整组<b>全部刚从区域里取出来</b> + 落在空地 → <b>叠成一摞</b>。
+	///     一次手势从手牌里抓起 N 张、放下就是 N 张一摞，对得上手上的动作。</item>
+	///   <item>否则 → <b>仅移动</b>：保持相对排列，<b>一概不并堆</b>（压在别的牌上也不并）。</item>
+	///   </list></item>
+	/// </list>
+	///
+	/// <b>第 3 条里"从哪来"必须区分开</b>，这是用户实测逼出来的：
+	/// 桌面上本来排好位置的几张牌，框选后拖到别处只是想换个地方摆，
+	/// 若一律自动成摞，等于把用户的排列毁掉 —— 而他从没表达过"要堆起来"。
+	/// 反过来，从手牌 / 牌库里抓一把出来，那就是"一把牌"，应当成摞。
+	/// 两个动作在手上完全一样，唯一的区别就是<b>从哪来</b>。
+	/// </summary>
+	private void TryMergeAfterDrop(Vector2 worldPos)
 	{
 		TabletopObject? anchor = null;
 		foreach (TabletopObject obj in _dragging)
@@ -419,15 +553,59 @@ public partial class ObjectManager : Node2D, IWorldPicker, IWheelHandler
 			return;
 
 		TabletopObject? target = PickTopmostExcluding(anchor.Position, _dragging);
-		if (target is not null)
+
+		// ---- 1. 单张 ----
+		if (_dragging.Count == 1)
 		{
-			MergeInto(target, _dragging);
+			if (target is not null)
+			{
+				MergeInto(target, _dragging);
+				return;
+			}
+
+			DetachFromPile(_dragging[0], keepPosition: true);
 			return;
 		}
 
-		// 没压到东西：单张拖出来 → 脱离原堆
-		if (_dragging.Count == 1)
-			DetachFromPile(_dragging[0], keepPosition: true);
+		// ---- 2. 拖整堆 ----
+		if (IsExactlyOneExistingPile(_dragging))
+		{
+			if (target is not null)
+				MergeInto(target, _dragging);
+
+			return;   // 落空地：堆不变，位置已经在拖动时跟着走了
+		}
+
+		// ---- 3. 一把散牌 ----
+		if (target is not null)
+			return;   // 压在别的牌上也只移动，绝不并堆
+
+		if (!_draggingFromZones)
+			return;   // 桌面上挪位置 → 仅移动，保持排列
+
+		// 从区域里取出的一把 + 落在空地 → 叠成一摞。
+		// 锚点取"离松手位置最近的那张"，也就是光标底下那张 ——
+		// 一摞牌应该成形在你放手的地方，而不是整组跳到最左边那张上去。
+		GroupIntoPile(_dragging, NearestTo(_dragging, worldPos));
+	}
+
+	/// <summary>给定一组物件里离某个世界坐标最近的那个。</summary>
+	private static TabletopObject? NearestTo(IReadOnlyList<TabletopObject> objects, Vector2 worldPos)
+	{
+		TabletopObject? best = null;
+		float bestDistance = float.MaxValue;
+
+		foreach (TabletopObject obj in objects)
+		{
+			float distance = obj.Position.DistanceSquaredTo(worldPos);
+			if (distance < bestDistance)
+			{
+				bestDistance = distance;
+				best = obj;
+			}
+		}
+
+		return best;
 	}
 
 	// ------------------------------------------------------------------ 滚轮：Alt 旋转
@@ -502,6 +680,36 @@ public partial class ObjectManager : Node2D, IWorldPicker, IWheelHandler
 		EmitSelectionChanged();
 	}
 
+	/// <summary>只选中给定的一批物件（区域菜单的"选中此区域全部"用）。</summary>
+	public void SelectOnly(IReadOnlyList<TabletopObject> objects)
+	{
+		ClearSelectionInternal();
+
+		foreach (TabletopObject obj in objects)
+		{
+			if (IsInstanceValid(obj))
+				AddToSelectionInternal(obj);
+		}
+
+		EmitSelectionChanged();
+	}
+
+	/// <summary>
+	/// 把物件从它所在的自由堆里摘出来。
+	///
+	/// 区域接管落点时必须先调它 —— <c>PileId</c> 与 <c>ZoneId</c> 是互斥的：
+	/// 一个物件不能既属于自由堆又属于区域叠。不摘的话，
+	/// <c>DetachFromPile</c> 的"成员剩 1 个就散堆"与区域的排版会互相打架。
+	/// </summary>
+	public void ReleaseFromPile(TabletopObject obj) => DetachFromPile(obj, keepPosition: true);
+
+	/// <summary>两个菜单一起收起（探针收尾用 —— <c>PopupMenu</c> 是 <c>Window</c>，会抢合成事件）。</summary>
+	public void HideAllMenus()
+	{
+		_menu?.Hide();
+		_zones?.HideMenu();
+	}
+
 	public void ClearSelection() => ClearSelectionInternal();
 
 	// ------------------------------------------------------------------ 物件操作
@@ -510,24 +718,70 @@ public partial class ObjectManager : Node2D, IWorldPicker, IWheelHandler
 	/// 键盘/滚轮操作的<b>目标集</b>。用户要求「悬停即为选中」，即指着哪张就操作哪张，
 	/// 不必先点一下。规则：
 	/// <list type="number">
-	/// <item>鼠标悬停在某个物件上 → 操作它。</item>
-	/// <item>悬停的物件<b>本身已在选中集里</b> → 操作整个选中集。
-	///   这条很关键：框选完之后鼠标通常还停在其中一个上，
-	///   若按规则 1 只操作那一张，用户会觉得"框选白做了"。</item>
+	/// <item>鼠标悬停在某个物件上 → 操作它（或它所在的那一摞，见下）。</item>
+	/// <item>悬停的物件<b>已在选中集里，且选中集不止一个</b> → 操作整个选中集。
+	///   这条是为多选服务的：框选完之后鼠标通常还停在其中一个上，
+	///   若只操作那一张，用户会觉得"框选白做了"。</item>
 	/// <item>什么都没悬停 → 操作选中集。</item>
 	/// </list>
+	///
+	/// <b>叠放语境下"指着哪张"要升格成"指着哪一摞"。</b>
+	/// 牌堆是一个整体，指着它按 F 得到的应该是"整个牌堆反过来"，
+	/// 而不是"恰好被指到的那第 7 张牌翻个面"。这与鼠标拖拽已有的语义一致
+	/// （拖任一成员 = 拖整堆，`Shift`+拖 = 抽单张）。
+	///
+	/// <b>但"只选中一张"时不走规则 2</b> —— 这是个很实际的坑：
+	/// 把一张牌拖到另一张上之后，那张牌<b>仍然是选中状态</b>（M2 刻意保留，
+	/// 方便拖完接着旋转）。于是"悬停对象在选中集里 → 目标是选中集"会把目标
+	/// 缩小成一张，整摞翻转退化成逐张翻面 —— 一张背靠背的牌（底盖顶开、
+	/// 上下看都是牌面）只翻过顶上那张之后，立刻显示卡背。
+	///
+	/// 系统无从区分"刻意选中一张"与"拖拽的残留"，所以这里按<b>意图强度</b>取舍：
+	/// 选中一张 ≈ 没选（多半是残留），选中多张才是刻意建立的一组。
+	/// 想只动一摞里的某张：`Shift`+拖把它抽出来，或用右键菜单 ——
+	/// 那是显式操作，作用于当时被点的那一张。
 	/// </summary>
 	private List<TabletopObject> ResolveActionTargets()
 	{
 		if (_hovered is not null && IsInstanceValid(_hovered))
 		{
-			if (_selection.Contains(_hovered))
+			bool hoveredIsSelected = _selection.Contains(_hovered);
+
+			// 多选优先：那是刻意建立的一组，不该被"指着一摞"抢走
+			if (hoveredIsSelected && _selection.Count > 1)
+				return new List<TabletopObject>(_selection);
+
+			// 一摞牌优先于"只有一张的选中集"
+			List<TabletopObject>? stack = StackAround(_hovered);
+			if (stack is not null)
+				return stack;
+
+			if (hoveredIsSelected)
 				return new List<TabletopObject>(_selection);
 
 			return new List<TabletopObject> { _hovered };
 		}
 
 		return new List<TabletopObject>(_selection);
+	}
+
+	/// <summary>
+	/// 该物件所在的"一摞"的全部成员（底 → 顶）；不在任何 ≥2 的叠放组里时返回 <c>null</c>。
+	///
+	/// 两种叠放组都要认：桌面上的<b>自由堆</b>（靠 <c>PileId</c> 认），
+	/// 与<b>叠放区域</b>（牌库 / 弃牌堆，靠 <c>ZoneId</c> 认 —— 后者的成员
+	/// <c>PileId</c> 恒为 0，只查 PileId 会漏掉整个牌库）。
+	/// </summary>
+	private List<TabletopObject>? StackAround(TabletopObject obj)
+	{
+		if (obj.PileId != 0 && _piles.TryGetValue(obj.PileId, out Pile? pile) && pile.Count >= 2)
+			return new List<TabletopObject>(pile.Members);
+
+		Zone? zone = _zones?.StackZoneOf(obj);
+		if (zone is not null && zone.Count >= 2)
+			return new List<TabletopObject>(zone.Members);
+
+		return null;
 	}
 
 	/// <summary>
@@ -550,13 +804,101 @@ public partial class ObjectManager : Node2D, IWorldPicker, IWheelHandler
 		}
 	}
 
+	/// <summary>
+	/// 翻转。分两种情况，区别很重要：
+	/// <list type="bullet">
+	/// <item>目标<b>正好是一整摞</b>（自由堆或叠放区域的全部成员）→ <b>整摞反过来</b>：
+	///   成员次序反转（底牌变顶牌）+ 每张牌正反面翻转。这就是物理上把一摞牌拿起来翻个面。</item>
+	/// <item>其它情况 → 逐张翻面（M2 的行为，不变）。</item>
+	/// </list>
+	///
+	/// 为什么不统一成逐张翻面：在一摞盖着的牌上逐张翻面，结果是"顶牌还是原来那张、
+	/// 只是翻了面"，用户看到的是"牌堆没动"。而他要的是<b>整个牌堆反过来了</b> ——
+	/// 底下的牌跑到顶上。只反转次序也不够：盖着的一摞反转之后画面毫无变化，像没反应。
+	/// 两件事必须一起做，因为整摞转 180° 本来就会同时造成这两个结果。
+	/// </summary>
 	public void FlipObjects(IReadOnlyList<TabletopObject> targets)
 	{
+		if (TryFlipWholeStack(targets))
+			return;
+
 		foreach (TabletopObject obj in targets)
 		{
 			obj.IsFaceDown = !obj.IsFaceDown;
 			obj.QueueRedraw();
 		}
+	}
+
+	/// <summary>目标是否构成一整摞；是则整摞翻过来并返回 true。</summary>
+	private bool TryFlipWholeStack(IReadOnlyList<TabletopObject> targets)
+	{
+		if (targets.Count < 2)
+			return false;
+
+		// (a) 桌面上的自由堆
+		int pileId = targets[0].PileId;
+		if (pileId != 0 && _piles.TryGetValue(pileId, out Pile? pile) && pile.Count == targets.Count)
+		{
+			pile.Members.Reverse();
+
+			foreach (TabletopObject m in pile.Members)
+				m.IsFaceDown = !m.IsFaceDown;
+
+			LayoutPile(pile);
+			SyncDrawOrderToStack(pile.Members);
+			_hud?.Toast($"这摞已整个翻过来（{pile.Count} 张）");
+			return true;
+		}
+
+		// (b) 叠放区域（牌库 / 弃牌堆）
+		Zone? zone = _zones?.StackZoneOf(targets[0]);
+		if (zone is not null && zone.Count == targets.Count)
+		{
+			zone.FlipOver();                       // 反转成员 + 翻正反面 + 重排
+			SyncDrawOrderToStack(zone.Members);    // 绘制次序得跟上，否则新顶牌被画在底下
+			_hud?.Toast($"{zone.DisplayName} 已整个翻过来（{zone.Count} 张）");
+			return true;
+		}
+
+		return false;
+	}
+
+	/// <summary>
+	/// 该物件在绘制次序里的位置（<b>越大越靠上</b>；不属于本管理器时返回 -1）。
+	/// 自检用它比较"一摞牌的绘制次序"与"成员次序"是否一致 —— 见
+	/// <c>DevZoneSim</c> 里对 <c>stack_draw_order_matches_members</c> 的说明。
+	/// </summary>
+	public int DrawIndexOf(TabletopObject obj) => _drawOrder.IndexOf(obj);
+
+	/// <summary>
+	/// 让绘制次序跟上给定的"底 → 顶"顺序。
+	///
+	/// 这些物件<b>原本占用的位置不变</b>，只是按新顺序重填 ——
+	/// 于是它们仍然是连续的一段（堆内连续是 M2 的约定），只是段内次序换了。
+	/// 整摞翻转 / 洗牌之后<b>必须</b>调：画面上谁压谁完全由 <c>_drawOrder</c> 决定，
+	/// 不同步的话新的顶牌会被画在其它牌底下，看起来像"翻转没生效"。
+	/// </summary>
+	public void SyncDrawOrderToStack(IReadOnlyList<TabletopObject> bottomToTop)
+	{
+		var wanted = new HashSet<TabletopObject>();
+		foreach (TabletopObject obj in bottomToTop)
+			wanted.Add(obj);
+
+		var slots = new List<int>();
+		for (int i = 0; i < _drawOrder.Count; i++)
+		{
+			if (wanted.Contains(_drawOrder[i]))
+				slots.Add(i);
+		}
+
+		// 数量对不上说明状态不一致（比如有成员已被删掉），宁可不改，也别把次序搅乱
+		if (slots.Count != bottomToTop.Count)
+			return;
+
+		for (int i = 0; i < slots.Count; i++)
+			_drawOrder[slots[i]] = bottomToTop[i];
+
+		ApplyDrawOrder();
 	}
 
 	public void RotateObjects(IReadOnlyList<TabletopObject> targets, float degrees)
@@ -580,6 +922,10 @@ public partial class ObjectManager : Node2D, IWorldPicker, IWheelHandler
 
 	public void DeleteObjects(IReadOnlyList<TabletopObject> targets)
 	{
+		// 先让区域松手。漏掉这一步 Zone.Members 会留着已释放节点的引用，
+		// 下一次区域排版就会碰到野指针 —— 那是崩溃，不是数据不准。
+		_zones?.ForgetObjects(targets);
+
 		foreach (TabletopObject obj in targets)
 		{
 			DetachFromPile(obj, keepPosition: true);
@@ -608,8 +954,14 @@ public partial class ObjectManager : Node2D, IWorldPicker, IWheelHandler
 		{
 			ObjectState state = obj.CaptureState();
 			state.Position += offset;
+
+			// 副本不继承任何归属：它既不在原堆里，也不在区域里。
+			// 只清 PileId 不清 ZoneId 的话，副本会自称属于牌库，
+			// 而牌库的 Members 里根本没有它 —— 这种"双簿记不一致"是最难查的一类 bug，
+			// 自检里的 member_counts_match 不变量就是冲着它去的。
 			state.PileId = 0;
 			state.PileIndex = 0;
+			state.ZoneId = "";
 
 			TabletopObject? copy = InstantiateFromState(state);
 			if (copy is not null)
@@ -701,17 +1053,37 @@ public partial class ObjectManager : Node2D, IWorldPicker, IWheelHandler
 
 	/// <summary>
 	/// 把一组物件直接并成一堆（不经过拖放）。
-	/// 演示内容、以及将来"把牌库洗好摆成一叠"都会用到。
+	/// 演示内容、区域抽牌、以及"多选拖到空地自动成摞"都会用到。
 	/// </summary>
-	public void GroupIntoPile(IReadOnlyList<TabletopObject> members)
+	/// <param name="members">要成堆的物件，至少 2 个。</param>
+	/// <param name="anchor">指定哪一张当<b>最底下</b>那张（堆的成形位置就是它的位置）。
+	/// 为 <c>null</c> 或不在 <paramref name="members"/> 里时取第一个。</param>
+	public void GroupIntoPile(IReadOnlyList<TabletopObject> members, TabletopObject? anchor = null)
 	{
 		if (members.Count < 2)
 			return;
 
+		// 锚点必须真的在 members 里（用引用比较，不用 Equals —— Godot 节点比较语义容易踩坑）。
+		// IReadOnlyList 没有 Contains，所以自己走一遍。
 		TabletopObject target = members[0];
+		if (anchor is not null)
+		{
+			foreach (TabletopObject m in members)
+			{
+				if (ReferenceEquals(m, anchor))
+				{
+					target = m;
+					break;
+				}
+			}
+		}
+
 		var rest = new List<TabletopObject>(members.Count - 1);
-		for (int i = 1; i < members.Count; i++)
-			rest.Add(members[i]);
+		foreach (TabletopObject m in members)
+		{
+			if (!ReferenceEquals(m, target))
+				rest.Add(m);
+		}
 
 		MergeInto(target, rest);
 	}
@@ -790,14 +1162,12 @@ public partial class ObjectManager : Node2D, IWorldPicker, IWheelHandler
 		LayoutPile(pile);
 	}
 
-	private static void ResetPileFields(TabletopObject obj)
-	{
-		obj.PileId = 0;
-		obj.PileIndex = 0;
-		obj.PileCount = 0;
-		obj.Visible = true;
-		obj.QueueRedraw();
-	}
+	/// <summary>
+	/// 把物件从自由堆里摘干净。
+	/// 直接委托给 <see cref="TabletopObject.ClearStackVisual"/> —— 自由堆与区域两条路
+	/// 都必须用同一份"回到普通散件"的逻辑，否则总有一条会漏清张数徽章。
+	/// </summary>
+	private static void ResetPileFields(TabletopObject obj) => obj.ClearStackVisual();
 
 	/// <summary>拆散选中物件所在的堆。</summary>
 	public void DissolvePile(TabletopObject obj)
@@ -899,6 +1269,16 @@ public partial class ObjectManager : Node2D, IWorldPicker, IWheelHandler
 			return;
 
 		TabletopObject? target = PickTopmostExcluding(worldPos, null);
+
+		// 区域可能先接管。Stack 区域（牌库 / 弃牌堆）的正确操作单位是"这一摞"
+		// （洗牌 / 抽牌 / 全部翻开），而不是"恰好被点到的那第 7 张牌"。
+		// 别的排版类型仍然是物件优先 —— 那里每张牌都要能单独操作。
+		if (_zones is not null && _zones.TryHandleContextMenu(worldPos, screenPos, target))
+		{
+			// 顺手收掉上一次的物件菜单：PopupMenu 是 Window，留着会抢后续的合成鼠标事件
+			_menu.Hide();
+			return;
+		}
 
 		if (target is null)
 		{
@@ -1090,10 +1470,52 @@ public partial class ObjectManager : Node2D, IWorldPicker, IWheelHandler
 
 	// ------------------------------------------------------------------ 键盘
 
+	/// <summary>
+	/// 洗桌面上的<b>自由堆</b>（R）：悬停在一摞散牌上就洗它。
+	///
+	/// 叠放区域（牌库 / 弃牌堆）不在这里处理 —— 那条路归 <c>ZoneManager</c>，
+	/// 它有自己的成员表与排版，混在一起会变成两处各自维护同一件事。
+	/// 这里的判断条件刻意写窄（必须是自由堆成员），保证区域那条路不被拦住。
+	/// </summary>
+	private bool TryShuffleHoveredPile()
+	{
+		if (_hovered is null || !IsInstanceValid(_hovered))
+			return false;
+
+		if (_hovered.PileId == 0 || !_piles.TryGetValue(_hovered.PileId, out Pile? pile))
+			return false;
+
+		if (pile.Count < 2)
+			return false;
+
+		int seed = pile.Shuffle();
+		LayoutPile(pile);
+		SyncDrawOrderToStack(pile.Members);
+		_hud?.Toast($"这摞已洗牌（{pile.Count} 张，种子 {seed}）");
+		return true;
+	}
+
 	public override void _UnhandledKeyInput(InputEvent @event)
 	{
 		if (@event is not InputEventKey key || !key.Pressed || key.Echo)
 			return;
+
+		// 洗牌（R）：悬停在一摞牌上就洗那一摞。
+		// <b>物件优先于区域</b> —— 鼠标指着牌堆里的某张牌时，要洗的是那一摞，
+		// 而不是"恰好压在这摞底下的那个区域"。
+		if (key.IsActionPressed("tt_shuffle") && TryShuffleHoveredPile())
+		{
+			GetViewport().SetInputAsHandled();
+			return;
+		}
+
+		// 剩下的按键（区域洗牌 / 双击抽牌的 D）交给区域系统。
+		// 它没有悬停目标时返回 false，照常往下走 —— 于是这些键在区域之外毫无副作用。
+		if (_zones is not null && _zones.TryHandleKey(key))
+		{
+			GetViewport().SetInputAsHandled();
+			return;
+		}
 
 		// 「悬停即为选中」：操作目标是"指着的那张"，没有悬停才退回选中集。
 		// 所以这里判断的是目标集是否为空，而不是选中集是否为空 ——

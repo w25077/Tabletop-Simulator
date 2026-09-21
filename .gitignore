@@ -28,6 +28,11 @@ obj/
 .dev/
 # 本地开发工具的会话快照
 .dsh/
+# DSH 会话自身的临时探针文件，会在 git 操作中途出现/消失。
+# 曾经因为一次 `git add -A` 被卷进提交 —— 显式挡住，别再靠"它自己会消失"。
+.dsh-hook-probe.json
+.dsh-hook-capture.log
+.dsh-minimal-probe.txt
 
 # ---- 内部工作文档（不提交）----
 # 这两份是给协作会话看的进度/交接记录，不属于项目本身，

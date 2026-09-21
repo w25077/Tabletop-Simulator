@@ -8,6 +8,7 @@
 [ext_resource type="Script" uid="uid://c03lmrjhm5r31" path="res://scripts/Core/Objects/SelectionBox.cs" id="4_q8u5g"]
 [ext_resource type="Script" uid="uid://bge8crumss7xg" path="res://scripts/Core/Hud.cs" id="5_q8u5g"]
 [ext_resource type="Script" uid="uid://s01b5hi5cg0t" path="res://scripts/Dev/DevCapture.cs" id="6_c01mt"]
+[ext_resource type="Script" uid="uid://bea2llpknxlub" path="res://scripts/Core/Objects/ZoneManager.cs" id="7_zones"]
 
 [node name="Main" type="Node2D" unique_id=1146469549]
 script = ExtResource("1_vcsgt")
@@ -17,6 +18,7 @@ script = ExtResource("2_c01mt")
 
 [node name="Zones" type="Node2D" parent="." unique_id=1928231685]
 z_index = -500
+script = ExtResource("7_zones")
 
 [node name="Objects" type="Node2D" parent="." unique_id=1885439419]
 script = ExtResource("3_jlsqs")
@@ -39,6 +41,8 @@ layout_mode = 3
 anchors_preset = 15
 anchor_right = 1.0
 anchor_bottom = 1.0
+grow_horizontal = 2
+grow_vertical = 2
 mouse_filter = 2
 
 [node name="Layout" type="VBoxContainer" parent="HUD/HudRoot" unique_id=2041031198]
@@ -81,6 +85,14 @@ layout_mode = 2
 text = "选中 0"
 vertical_alignment = 1
 
+[node name="Sep3" type="VSeparator" parent="HUD/HudRoot/Layout/TopBar/TopRow" unique_id=705804470]
+layout_mode = 2
+
+[node name="ZoneLabel" type="Label" parent="HUD/HudRoot/Layout/TopBar/TopRow" unique_id=1931858946]
+layout_mode = 2
+text = "区域 0"
+vertical_alignment = 1
+
 [node name="Spacer" type="Control" parent="HUD/HudRoot/Layout/TopBar/TopRow" unique_id=383177900]
 layout_mode = 2
 size_flags_horizontal = 3
@@ -113,7 +125,7 @@ layout_mode = 2
 
 [node name="HintLabel" type="Label" parent="HUD/HudRoot/Layout/HintBar" unique_id=1746742145]
 layout_mode = 2
-text = "滚轮 缩放　·　中键/右键/空格+左键 平移　·　左键拖 移物 / 空白拖 框选　·　Shift+拖 从堆中抽单张　·　F 翻面　·　[ ] 旋转 15°　·　Alt+滚轮 微旋　·　G 网格吸附　·　Ctrl+D 复制　·　Del 删除　·　Home 适配桌面"
+text = "滚轮 缩放　·　中键/右键/空格+左键 平移　·　左键拖 移物 / 空白拖 框选　·　拖到区域上方松手 归入区域　·　双击牌库或 D 抽牌　·　R 洗牌　·　Shift+拖 抽单张　·　F 翻面　·　[ ] 旋转 15°　·　Alt+滚轮 微旋　·　G 网格吸附　·　Ctrl+D 复制　·　Del 删除　·　Home 适配桌面"
 horizontal_alignment = 1
 
 [node name="DevCapture" type="Node" parent="." unique_id=118026493]

@@ -42,8 +42,18 @@ public sealed class ObjectState
 	/// <summary>所属堆的 id；0 = 不在堆里。</summary>
 	public int PileId { get; set; }
 
-	/// <summary>在堆中的次序，0 = 最底。</summary>
+	/// <summary>在堆中的次序，0 = 最底。区域叠放时也表示在区域里的次序（见 <see cref="ZoneId"/>）。</summary>
 	public int PileIndex { get; set; }
+
+	// ---- 区域（M3）----
+	/// <summary>
+	/// 所属区域的 id；空字符串 = 不属于任何区域。指向 <c>ZoneDefinition.Id</c>。
+	///
+	/// 与 <see cref="PileId"/> 互斥：区域成员恒有 <c>PileId == 0</c>。
+	/// 注意这是<b>声明</b>——读档时还要由加载器把它和 <c>Zone.Members</c> 对上，
+	/// 两边只对一半就是自检里 <c>member_counts_match</c> 要抓的 bug。
+	/// </summary>
+	public string ZoneId { get; set; } = "";
 
 	// ---- 卡牌专属 ----
 	/// <summary>实例级字段覆盖：只改这一张卡，不污染定义。</summary>
@@ -71,6 +81,7 @@ public sealed class ObjectState
 		FaceDown = FaceDown,
 		PileId = PileId,
 		PileIndex = PileIndex,
+		ZoneId = ZoneId,
 		FieldOverrides = new Dictionary<string, string>(FieldOverrides),
 		DiceSides = DiceSides,
 		DiceCount = DiceCount,

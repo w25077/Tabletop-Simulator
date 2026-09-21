@@ -45,6 +45,10 @@ public partial class ViewportController : Node
 	private Vector2 _gestureStartScreen;
 	private Node2D? _pressedTarget;
 
+	// ---- 双击判定状态（只统计左键的"点击"，见 RegisterClickAndCheckDouble）----
+	private ulong _lastClickMsec;
+	private Vector2 _lastClickScreen;
+
 	// ------------------------------------------------------------------ 事件
 
 	/// <summary>鼠标在世界坐标中移动（悬停）。</summary>
@@ -68,6 +72,19 @@ public partial class ViewportController : Node
 
 	/// <summary>左键在空白处单击（未拖拽）—— 用来取消选中。</summary>
 	[Signal] public delegate void EmptyAreaClickedEventHandler(Vector2 worldPos);
+
+	/// <summary>
+	/// 左键双击（两次"未拖动的点击"落在几乎同一处且间隔很短）。
+	///
+	/// 判定是这里的（见 <see cref="GameConfig.DoubleClickSeconds"/> 的说明），
+	/// 而不是用事件自带的 <c>DoubleClick</c> 标志 —— 那个标志在合成输入路径上不会被填写，
+	/// 用它会让"双击抽牌"变成自检覆盖不到的盲区。
+	///
+	/// 发出时机在<b>第二次点击的松开</b>时，且在 <see cref="PrimaryReleased"/> /
+	/// <see cref="EmptyAreaClicked"/> 之后 —— 于是"双击牌库"既能让被点到的顶牌先完成
+	/// 一次普通点击，又能让落在牌库空白处的双击照样被区域收到。
+	/// </summary>
+	[Signal] public delegate void PrimaryDoubleClickedEventHandler(Vector2 worldPos);
 
 	/// <summary>
 	/// 右键轻点（未拖拽）—— 请求上下文菜单。
@@ -194,6 +211,10 @@ public partial class ViewportController : Node
 				break;
 
 			case Gesture.PrimaryPending:
+				// 先判双击（用松开位置），再决定这次是"点物件"还是"点空白"。
+				// 顺序有讲究：双击信号必须最后发，这样区域看到的是"点击已经处理完了"的状态。
+				bool isDoubleClick = RegisterClickAndCheckDouble(screen);
+
 				if (_pressedTarget is null)
 				{
 					// 左键轻点落空 → 取消选中
@@ -205,6 +226,9 @@ public partial class ViewportController : Node
 					// 物件系统靠它实现"轻点"语义（例如轻点骰子即掷）。
 					EmitSignal(SignalName.PrimaryReleased, world);
 				}
+
+				if (isDoubleClick)
+					EmitSignal(SignalName.PrimaryDoubleClicked, world);
 				break;
 
 			case Gesture.PrimaryDragging:
@@ -291,5 +315,37 @@ public partial class ViewportController : Node
 	{
 		_gesture = Gesture.None;
 		_pressedTarget = null;
+	}
+
+	/// <summary>
+	/// 记一次"点击"并判断它是不是双击的第二次。
+	///
+	/// 只在<b>按住平移键之外的左键点击</b>上调用（回到这里说明这次手势没有越过拖拽阈值），
+	/// 所以"拖拽"永远不会被算成第一次点击 —— 否则拖完一张牌再点一下同一位置，
+	/// 会被误判成双击。
+	///
+	/// 双击一旦成立就把记录清掉，避免三连击被算成两次双击。
+	/// </summary>
+	private bool RegisterClickAndCheckDouble(Vector2 screen)
+	{
+		ulong now = Time.GetTicksMsec();
+		ulong window = (ulong)(GameConfig.DoubleClickSeconds * 1000.0);
+
+		bool isDouble =
+			_lastClickMsec != 0 &&
+			now - _lastClickMsec <= window &&
+			screen.DistanceTo(_lastClickScreen) <= GameConfig.DoubleClickMaxDriftPixels;
+
+		if (isDouble)
+		{
+			_lastClickMsec = 0;
+		}
+		else
+		{
+			_lastClickMsec = now;
+			_lastClickScreen = screen;
+		}
+
+		return isDouble;
 	}
 }

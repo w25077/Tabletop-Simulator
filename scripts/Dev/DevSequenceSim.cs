@@ -18,16 +18,29 @@ namespace TabletopSimulator.Dev;
 internal static class DevSequenceSim
 {
 	internal static async Task<Godot.Collections.Dictionary> Probe(
-		Node host, BoardCamera cam, ViewportController vc, ObjectManager objects)
+		Node host, BoardCamera cam, ViewportController vc, ObjectManager objects, ZoneManager? zones = null)
 	{
 		var r = new Godot.Collections.Dictionary();
 
-		await ClickThenBoxSelect(host, cam, objects, r);
+		// 同 DevObjectSim：条件不够时标记 skipped 且<b>不写 pass</b>，
+		// 让"没跑"和"跑挂了"在报告里长得不一样。
+		int looseOnScreen = DevInputSim.CountLooseOnScreen(objects, cam);
+		r["loose_on_screen"] = looseOnScreen;
+
+		if (looseOnScreen < 2)
+		{
+			r["skipped"] = $"屏幕内的散件只有 {looseOnScreen} 个，本节需要至少 2 个"
+				+ "（「悬停即为目标」与「两卡互不重叠」两条断言都要两张）。"
+				+ "近景视角下这是正常的，请用默认整桌视角重跑。";
+			return r;
+		}
+
+		await ClickThenBoxSelect(host, cam, objects, zones, r);
 		await HoverIsTheTarget(host, cam, objects, r);
-		await SelectionClearsOnHoverOff(host, cam, objects, r);
+		await SelectionClearsOnHoverOff(host, cam, objects, zones, r);
 		await RightClickMenu(host, cam, objects, r);
 		await MenuClampsAtEdge(host, cam, objects, r);
-		await ShiftExtractFromPile(host, cam, objects, r);
+		await ShiftExtractFromPile(host, cam, objects, zones, r);
 		await DragWholePile(host, cam, objects, r);
 		await SelectAllThenDuplicate(host, objects, r);
 
@@ -52,7 +65,8 @@ internal static class DevSequenceSim
 	/// 先轻点一张卡（选中、但不拖动），然后立刻在空白处框选。
 	/// 这一步专门抓"上一次手势的残留状态把下一次手势带偏"。
 	/// </summary>
-	private static async Task ClickThenBoxSelect(Node host, BoardCamera cam, ObjectManager objects, Godot.Collections.Dictionary r)
+	private static async Task ClickThenBoxSelect(
+		Node host, BoardCamera cam, ObjectManager objects, ZoneManager? zones, Godot.Collections.Dictionary r)
 	{
 		CardObject? card = FindAnyCard(objects, cam);
 		if (card is null)
@@ -77,7 +91,7 @@ internal static class DevSequenceSim
 		await DevInputSim.Frame(host);
 
 		Vector2 cardPos = cam.WorldToScreen(card.Position);
-		Vector2? startOpt = DevInputSim.FindEmptyScreenPointNear(cam, objects, cardPos, 420f);
+		Vector2? startOpt = DevInputSim.FindEmptyScreenPointNear(cam, objects, cardPos, 420f, zones);
 		if (startOpt is null)
 		{
 			r["click_then_box_ok"] = false;
@@ -169,7 +183,8 @@ internal static class DevSequenceSim
 	/// <item>多选（框选 / Ctrl+点选）—— 用户刻意建立的集合，不该被一次移动冲掉。</item>
 	/// </list>
 	/// </summary>
-	private static async Task SelectionClearsOnHoverOff(Node host, BoardCamera cam, ObjectManager objects, Godot.Collections.Dictionary r)
+	private static async Task SelectionClearsOnHoverOff(
+		Node host, BoardCamera cam, ObjectManager objects, ZoneManager? zones, Godot.Collections.Dictionary r)
 	{
 		CardObject? card = FindAnyCard(objects, cam);
 		if (card is null)
@@ -191,7 +206,7 @@ internal static class DevSequenceSim
 		bool faceBefore = card.IsFaceDown;
 
 		// 2) 鼠标移到空白处（只移动，不点击）
-		Vector2 empty = DevInputSim.FindEmptyScreenPoint(cam, objects);
+		Vector2 empty = DevInputSim.FindEmptyScreenPoint(cam, objects, zones);
 		DevInputSim.PushMotion(empty, empty - cardScreen);
 		await DevInputSim.Frame(host);
 		await DevInputSim.Frame(host);
@@ -210,14 +225,14 @@ internal static class DevSequenceSim
 		r["hover_off_ok"] = objects.Selection.Count == 0 && !card.IsActionTarget && !flipped;
 	}
 
-	/// <summary>挑两张互不重叠、都在屏幕内的正面卡：各自位置上的最上层物件必须就是它自己。</summary>
+	/// <summary>挑两张互不重叠、都在屏幕内的正面散件卡：各自位置上的最上层物件必须就是它自己。</summary>
 	private static (CardObject?, CardObject?) FindTwoSeparateCards(ObjectManager objects, BoardCamera cam)
 	{
 		var candidates = new List<CardObject>();
 
 		foreach (TabletopObject obj in objects.AllObjects)
 		{
-			if (obj is CardObject card && card.Visible && !card.IsFaceDown
+			if (obj is CardObject card && card.ZoneId == "" && card.Visible && !card.IsFaceDown
 				&& DevInputSim.IsOnScreen(cam, card.Position)
 				&& ReferenceEquals(objects.PickTopmost(card.Position), card))
 			{
@@ -348,7 +363,8 @@ internal static class DevSequenceSim
 	// ------------------------------------------------------------------ 顺序 3
 
 	/// <summary>Shift+拖拽 把堆里最上面一张抽出来，原堆必须还剩原来的张数减一。</summary>
-	private static async Task ShiftExtractFromPile(Node host, BoardCamera cam, ObjectManager objects, Godot.Collections.Dictionary r)
+	private static async Task ShiftExtractFromPile(
+		Node host, BoardCamera cam, ObjectManager objects, ZoneManager? zones, Godot.Collections.Dictionary r)
 	{
 		int pileId = 0;
 		int countBefore = 0;
@@ -373,8 +389,16 @@ internal static class DevSequenceSim
 		}
 
 		Vector2 start = cam.WorldToScreen(top.Position);
-		Vector2 empty = DevInputSim.FindEmptyScreenPoint(cam, objects);
+		Vector2 empty = DevInputSim.FindEmptyScreenPoint(cam, objects, zones);
 		Vector2 screenDelta = empty - start;
+		Vector2 emptyWorld = cam.ScreenToWorld(empty);
+
+		// 诊断：万一"抽出来的那张又被并回别的堆"，光看 PileId 变化查不出是被谁并了。
+		// 先把松手点下面到底有什么、以及目标卡最终落在哪，一并记下来。
+		r["shift_drop_screen"] = Vec2(empty);
+		r["shift_drop_world"] = Vec2(emptyWorld);
+		r["shift_drop_occupant"] = (objects.PickTopmost(emptyWorld) as TabletopObject)?.Uid ?? "(null)";
+		r["shift_target_start"] = Vec2(top.Position);
 
 		// 按住 Shift 再拖 —— ViewportController 用 Input.IsKeyPressed(Key.Shift) 判断，
 		// 所以合成事件之外还得让 Input 认为 Shift 真的按着。
@@ -396,6 +420,8 @@ internal static class DevSequenceSim
 		r["shift_pile_before"] = countBefore;
 		r["shift_pile_after"] = countAfter;
 		r["shift_extracted_pile_id"] = top.PileId;
+		r["shift_target_end"] = Vec2(top.Position);
+		r["shift_target_drift_px"] = top.Position.DistanceTo(emptyWorld);
 		r["shift_extract_ok"] = countAfter == countBefore - 1 && top.PileId == 0;
 	}
 
@@ -459,10 +485,18 @@ internal static class DevSequenceSim
 
 	// ------------------------------------------------------------------ 顺序 5
 
-	/// <summary>全选后复制：物件数应该翻倍，且副本不能和原件完全重叠。</summary>
+	/// <summary>
+	/// 全选后复制：物件数应该翻倍，且副本不能和原件完全重叠。
+	///
+	/// <b>M3 修正</b>：原断言写的是 <c>selected == before</c>，隐含"所有物件都可见"。
+	/// 牌库出现之后这条前提就不成立了 —— <c>SelectAll</c> 只选可见的，
+	/// 而牌库里 17 张牌是盖在下面不画的。所以基准必须换成<b>可见物件数</b>，
+	/// 否则这条断言会一直红着，逼人去改本来正确的产品代码。
+	/// </summary>
 	private static async Task SelectAllThenDuplicate(Node host, ObjectManager objects, Godot.Collections.Dictionary r)
 	{
 		int before = objects.ObjectCount;
+		int visibleBefore = CountVisible(objects);
 
 		objects.SelectAll();
 		await DevInputSim.Frame(host);
@@ -474,9 +508,24 @@ internal static class DevSequenceSim
 		int after = objects.ObjectCount;
 
 		r["dup_before"] = before;
+		r["dup_visible_before"] = visibleBefore;
 		r["dup_selected"] = selected;
 		r["dup_after"] = after;
-		r["dup_ok"] = before > 0 && selected == before && after == before + selected;
+		r["dup_ok"] = before > 0 && visibleBefore > 0
+			&& selected == visibleBefore
+			&& after == before + selected;
+	}
+
+	private static int CountVisible(ObjectManager objects)
+	{
+		int n = 0;
+		foreach (TabletopObject obj in objects.AllObjects)
+		{
+			if (obj.Visible)
+				n++;
+		}
+
+		return n;
 	}
 
 	// ------------------------------------------------------------------ 工具
@@ -485,9 +534,14 @@ internal static class DevSequenceSim
 	{
 		// 只挑屏幕上看得见的 —— 前面的步骤可能把物件拖到视口之外，
 		// 对它合成点击等于点在视口外，测出来的是假失败。
+		//
+		// M3 起还要排除区域成员：牌库最上面那几张牌也"可见"，
+		// 但它们被 Stack 区域接管（右键弹的是区域菜单、位置由区域排版决定），
+		// 拿它们当普通物件测会测得牛头不对马嘴。
 		foreach (TabletopObject obj in objects.AllObjects)
 		{
-			if (obj is CardObject card && card.Visible && DevInputSim.IsOnScreen(cam, card.Position))
+			if (obj is CardObject card && card.ZoneId == "" && card.Visible
+				&& DevInputSim.IsOnScreen(cam, card.Position))
 				return card;
 		}
 
@@ -496,4 +550,6 @@ internal static class DevSequenceSim
 
 	private static bool AsBool(Godot.Collections.Dictionary dict, string key)
 		=> dict.ContainsKey(key) && dict[key].AsBool();
+
+	private static Godot.Collections.Array Vec2(Vector2 v) => new() { v.X, v.Y };
 }

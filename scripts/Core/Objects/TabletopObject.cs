@@ -33,6 +33,19 @@ public abstract partial class TabletopObject : Node2D
 	public int PileIndex { get; set; }
 	public int PileCount { get; set; }
 
+	/// <summary>
+	/// 所属区域的 <c>ZoneDefinition.Id</c>；空字符串 = 不属于任何区域。
+	///
+	/// 这是「区域成员关系」的<b>唯一真相</b>：<c>Zone.Members</c> 是它的有序镜像，
+	/// 两边不一致就是 bug（自检里有专门的不变量断言）。
+	///
+	/// <b>与 <see cref="PileId"/> 互斥</b>：一个物件不可能同时属于自由堆和区域叠。
+	/// 区域叠的位置由 <see cref="PileIndex"/> / <see cref="PileCount"/> 表达，不用 PileId ——
+	/// 这样 M2 的自由堆生命周期（成员剩 1 个就解散、ResetPileFields 会把 Visible 改回 true）
+	/// 就永远不会误伤区域成员。
+	/// </summary>
+	public string ZoneId { get; set; } = "";
+
 	// ---- 交互状态 ----
 	public bool IsSelected { get; set; }
 	public bool IsHovered { get; set; }
@@ -44,8 +57,32 @@ public abstract partial class TabletopObject : Node2D
 	/// </summary>
 	public bool IsActionTarget { get; set; }
 
-	/// <summary>本地矩形，原点在中心。</summary>
+	/// <summary>
+	/// 本地矩形，原点在中心。
+	/// </summary>
 	public Rect2 LocalRect => new(-Size * 0.5f, Size);
+
+	/// <summary>
+	/// 清掉"叠放位置"三项字段，把物件变回一件普通散件。
+	///
+	/// <b>凡是物件离开叠放语境（自由堆或叠放区域）都必须调它。</b>
+	/// 为什么必须集中成一个方法：<see cref="PileIndex"/> / <see cref="PileCount"/> 的唯一用途
+	/// 是画右上角那个张数徽章（条件：<c>PileCount &gt;= 2</c> 且 <c>PileIndex</c> 是最后一个）。
+	/// 离开时只要漏清一项，卡片就会带着上一站留下的徽章到处跑 ——
+	/// 比如从 30 张的牌库顶拖出来之后，那张牌右上角永远挂着个「30」，
+	/// 而数据上它已经不属于任何地方了。<b>数据都对、就是画错了</b>，最难查的一类。
+	///
+	/// 顺带把 <see cref="Visible"/> 恢复为 true：叠放区域只画最上面 3 张，
+	/// 从深处被抽出来的牌如果不恢复可见，就会"数据还在、画面上没有"。
+	/// </summary>
+	public void ClearStackVisual()
+	{
+		PileId = 0;
+		PileIndex = 0;
+		PileCount = 0;
+		Visible = true;
+		QueueRedraw();
+	}
 
 	/// <summary>旋转角（度）。Godot 内部用弧度，但配置与存档都用度更直观。</summary>
 	public float RotationDeg
@@ -119,13 +156,21 @@ public abstract partial class TabletopObject : Node2D
 			FaceDown = IsFaceDown,
 			PileId = PileId,
 			PileIndex = PileIndex,
+			ZoneId = ZoneId,
 		};
 
 		CaptureExtra(state);
 		return state;
 	}
 
-	/// <summary>写回快照。注意会重建子类内部状态，不只是位置。</summary>
+	/// <summary>
+	/// 写回快照。注意会重建子类内部状态，不只是位置。
+	///
+	/// <b><see cref="ZoneId"/> 是"声明"而不是"加入"</b>：写回它不会把物件放进
+	/// <c>Zone.Members</c>。读档时必须由存档加载器重建两边的对应关系，
+	/// 否则会得到「物件自称在牌库里、牌库却不认识它」的半截状态。
+	/// 复制物件时则相反 —— 副本不该继承区域归属，见 <c>ObjectManager.DuplicateObjects</c>。
+	/// </summary>
 	public void ApplyState(ObjectState state)
 	{
 		Position = state.Position;
@@ -133,6 +178,7 @@ public abstract partial class TabletopObject : Node2D
 		IsFaceDown = state.FaceDown;
 		PileId = state.PileId;
 		PileIndex = state.PileIndex;
+		ZoneId = state.ZoneId;
 
 		ApplyExtra(state);
 		QueueRedraw();

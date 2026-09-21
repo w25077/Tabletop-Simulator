@@ -69,6 +69,8 @@ internal static class DevReport
 
 		report["regions"] = RegionProbe(frame, vpSize);
 		report["objects"] = ObjectProbe(main);
+		report["zones"] = ZoneProbe(main);
+		report["badge_render"] = BadgeProbe(main, frame);
 		report["visual"] = VisualProbe(main, frame);
 
 		if (main.GetNodeOrNull("Camera2D") is BoardCamera cam)
@@ -370,6 +372,374 @@ internal static class DevReport
 		foreach (int v in values)
 			arr.Add(v);
 		return arr;
+	}
+
+	// ------------------------------------------------------------------ 区域（M3）
+
+	/// <summary>
+	/// 区域结构快照 + <b>六条不变量</b>。
+	///
+	/// 为什么这里不只是"列出有哪些区域"：M3 引入了一个双簿记风险 ——
+	/// 「物件自称属于某区域」（<c>object.ZoneId</c>）与「区域认为自己有哪些成员」
+	/// （<c>Zone.Members</c>）是两份数据。它们一旦不一致，症状是
+	/// "牌库显示 20 张、实际只能抽出 19 张"这种**看起来只是数字不对**的问题，
+	/// 靠人眼和普通断言都极难定位。
+	///
+	/// 所以把这层一致性直接翻译成几条不等式，让它在报告里变成一条红/绿。
+	/// </summary>
+	internal static Godot.Collections.Dictionary ZoneProbe(Node main)
+	{
+		var result = new Godot.Collections.Dictionary();
+
+		ObjectManager? objects = main.GetNodeOrNull<ObjectManager>("Objects");
+		ZoneManager? zones = main.GetNodeOrNull<ZoneManager>("Zones");
+
+		if (objects is null || zones is null)
+		{
+			// 提前返回也<b>必须</b>带上 pass —— 否则调用方读 after["pass"] 会抛
+			// KeyNotFoundException，而真正的症状（"区域探针根本没找到节点"）
+			// 会被这个二次异常盖掉，排查方向直接跑偏。这一轮就栽在这上面。
+			result["found"] = false;
+			result["note"] = objects is null
+				? "在传入的节点下找不到 ObjectManager（Objects）—— 传的是 Main 节点吗？"
+				: "在传入的节点下找不到 ZoneManager（Zones）—— 传的是 Main 节点吗？";
+			result["pass"] = false;
+			return result;
+		}
+
+		// 反向统计：每个区域 id 被多少物件"自称"属于
+		var claimed = new System.Collections.Generic.Dictionary<string, int>();
+		int pileZoneOverlap = 0;
+
+		foreach (TabletopObject obj in objects.AllObjects)
+		{
+			if (string.IsNullOrEmpty(obj.ZoneId))
+				continue;
+
+			claimed.TryGetValue(obj.ZoneId, out int n);
+			claimed[obj.ZoneId] = n + 1;
+
+			// PileId 与 ZoneId 必须互斥。同时非零意味着"M2 的自由堆生命周期"
+			// 和"区域的排版"都会去改同一个物件的位置与可见性，必然打架。
+			if (obj.PileId != 0)
+				pileZoneOverlap++;
+		}
+
+		var items = new Godot.Collections.Array();
+		bool idMatches = true;
+		bool noDuplicates = true;
+		bool countsMatch = true;
+		bool stackContiguous = true;
+		bool stackVisibleOk = true;
+		int totalMembers = 0;
+		int seenMembers = 0;
+		var memberUids = new System.Collections.Generic.HashSet<string>();
+
+		foreach (Zone zone in zones.AllZones)
+		{
+			int n = zone.Count;
+			totalMembers += n;
+
+			int faceDown = 0;
+			int visible = 0;
+
+			for (int i = 0; i < n; i++)
+			{
+				TabletopObject m = zone.Members[i];
+
+				if (!GodotObject.IsInstanceValid(m))
+				{
+					idMatches = false;
+					continue;
+				}
+
+				seenMembers++;
+
+				// 同一个物件不能同时出现在两个区域里
+				if (!memberUids.Add(m.Uid))
+					noDuplicates = false;
+
+				// 成员必须自称属于本区域
+				if (m.ZoneId != zone.Id)
+					idMatches = false;
+
+				if (m.IsFaceDown)
+					faceDown++;
+
+				if (m.Visible)
+					visible++;
+
+				if (zone.Definition.SortMode == Data.ZoneSortMode.Stack)
+				{
+					// 叠放区域的成员序号必须恰好是 0..n-1（排版函数写的就是这个）
+					if (m.PileIndex != i)
+						stackContiguous = false;
+
+					// 只画最上面 PileVisibleDepth 张 —— 下面那些必须是不可见的
+					bool shouldBeVisible = i >= n - GameConfig.PileVisibleDepth;
+					if (m.Visible != shouldBeVisible)
+						stackVisibleOk = false;
+				}
+			}
+
+			// 区域认为自己有 n 个成员，那么"自称属于它"的物件也必须是 n 个
+			claimed.TryGetValue(zone.Id, out int claimedCount);
+			if (claimedCount != n)
+				countsMatch = false;
+
+			items.Add(new Godot.Collections.Dictionary
+			{
+				["id"] = zone.Id,
+				["name"] = zone.DisplayName,
+				["kind"] = zone.Kind.ToString(),
+				["sort_mode"] = zone.Definition.SortMode.ToString(),
+				["face_on_enter"] = zone.Definition.FaceOnEnter.ToString(),
+				["enabled"] = zone.Definition.Enabled,
+				["max_cards"] = zone.Definition.MaxCards,
+				["draw_on_double_click"] = zone.Definition.DrawOnDoubleClick,
+				["draw_target"] = zone.Definition.DrawTargetId,
+				["rect"] = new Godot.Collections.Array
+				{
+					zone.Definition.Rect.Position.X, zone.Definition.Rect.Position.Y,
+					zone.Definition.Rect.Size.X, zone.Definition.Rect.Size.Y,
+				},
+				["member_count"] = n,
+				["visible_count"] = visible,
+				["face_down"] = faceDown,
+				["last_shuffle_seed"] = zone.LastShuffleSeed,
+				["top_uid"] = zone.Top?.Uid ?? "",
+			});
+		}
+
+		// 有区域 id 被物件自称属于，却根本没有这个区域 —— 只在换档 / 删区域时才出现
+		bool noOrphanClaims = true;
+		foreach (System.Collections.Generic.KeyValuePair<string, int> kv in claimed)
+		{
+			if (zones.Find(kv.Key) is null)
+				noOrphanClaims = false;
+		}
+
+		// 张数徽章只允许在"物件真的处在一个叠放组里"时出现。
+		//
+		// 这一条是补的洞：上面那些不变量全都在看「区域内部」，
+		// 没有任何一条管「物件离开叠放语境之后有没有留下残留」。
+		// 于是出现了这样一个 bug —— 把一张牌放进牌库再拖出来，
+		// 它右上角永远挂着牌库的张数（用户实测：拖出来还带着「30」）。
+		// 数据上它已经不属于任何地方，只有 PileIndex/PileCount 两项是旧的，
+		// 恰好满足徽章绘制条件（PileCount >= 2 且 PileIndex == PileCount - 1）。
+		//
+		// 所以判据写成：PileCount > 0 的物件，必须要么在某个自由堆里、
+		// 要么在某个叠放区域的成员表里，且张数与真实张数一致。
+		int phantomBadges = 0;
+		var phantomDetail = new Godot.Collections.Array();
+
+		foreach (TabletopObject obj in objects.AllObjects)
+		{
+			if (obj.PileCount <= 0)
+				continue;
+
+			bool legit = false;
+
+			if (obj.PileId != 0 && objects.Piles.TryGetValue(obj.PileId, out Pile? pile))
+			{
+				legit = obj.PileCount == pile.Count;
+			}
+			else if (!string.IsNullOrEmpty(obj.ZoneId) && zones.Find(obj.ZoneId) is Zone owner)
+			{
+				legit = owner.Definition.SortMode == Data.ZoneSortMode.Stack
+					&& obj.PileCount == owner.Count;
+			}
+
+			if (legit)
+				continue;
+
+			phantomBadges++;
+
+			if (phantomDetail.Count < 8)
+			{
+				phantomDetail.Add(
+					$"{obj.Uid} zone='{obj.ZoneId}' pile={obj.PileId} index={obj.PileIndex} count={obj.PileCount}");
+			}
+		}
+
+		// 不变量集中在一个字典里。聚合判定直接把整个字典与一遍 ——
+		// 不逐个写键名，从根上杜绝"子项写一个名、聚合读另一个名"
+		// （M2 为此栽过一次：五项子断言全绿却报失败）。
+		var invariants = new Godot.Collections.Dictionary
+		{
+			["zone_id_matches_membership"] = idMatches,
+			["no_member_in_two_zones"] = noDuplicates,
+			["member_counts_match"] = countsMatch,
+			["no_orphan_zone_claims"] = noOrphanClaims,
+			["stack_zones_contiguous"] = stackContiguous,
+			["stack_visible_depth_ok"] = stackVisibleOk,
+			["pile_zone_exclusive"] = pileZoneOverlap == 0,
+			["badge_only_when_stacked"] = phantomBadges == 0,
+		};
+
+		bool all = true;
+		foreach (System.Collections.Generic.KeyValuePair<Variant, Variant> kv in invariants)
+		{
+			if (!kv.Value.AsBool())
+				all = false;
+		}
+
+		result["found"] = true;
+		result["count"] = zones.ZoneCount;
+		result["total_members"] = totalMembers;
+		result["seen_members"] = seenMembers;
+		result["pile_zone_overlap_count"] = pileZoneOverlap;
+		result["phantom_badge_count"] = phantomBadges;
+		result["phantom_badge_detail"] = phantomDetail;
+		result["summary"] = zones.CountSummary();
+		result["items"] = items;
+		result["invariants"] = invariants;
+
+		// 说清楚这份不变量的"时间点"，免得被误读成一条持续保证。
+		// 本函数在**所有操作探针运行之前**调用（截图之后、模拟之前），
+		// 所以它只能保证"开局那一刻是一致的"。
+		// 运行期的一致性由 DevZoneSim 跑完一整套操作之后再查一遍，
+		// 结果在 zone_simulation.invariants_after —— 那里才抓得住
+		// "进出区域留下了残留"这类只有操作过才会出现的问题。
+		result["snapshot"] = "开局状态（所有操作探针运行之前）；运行期见 zone_simulation.invariants_after";
+
+		result["pass"] = zones.ZoneCount > 0 && all;
+		return result;
+	}
+
+	// ------------------------------------------------------------------ 张数徽章（像素级）
+
+	/// <summary>
+	/// 张数徽章到底有没有被画出来 —— <b>在像素上验，不是查字段</b>。
+	///
+	/// 为什么需要这一节：已有的物件探针全都在比对"卡面主色"，而徽章画不画
+	/// 对主色毫无影响 —— 所以「牌明明成了一堆、右上角却没有数字」这类问题
+	/// 能一路穿过所有断言。用户实测就报了这么一条。
+	///
+	/// 做法是成对取样，缺一半就说明不了问题：
+	/// <list type="bullet">
+	/// <item><b>实验组</b>：某个 ≥2 的堆里，最上面那张的右上角。</item>
+	/// <item><b>对照组</b>：一张不在任何堆里的散件卡，同样取右上角。</item>
+	/// </list>
+	/// 前者应当有徽章填充色（深蓝 <c>#2e3440</c>）的成片像素，后者应当几乎没有。
+	/// 只查实验组是不够的 —— 万一那个颜色本来就到处都有，断言会永远绿。
+	/// </summary>
+	private static Godot.Collections.Dictionary BadgeProbe(Node main, Image frame)
+	{
+		var result = new Godot.Collections.Dictionary();
+
+		ObjectManager? objects = main.GetNodeOrNull<ObjectManager>("Objects");
+		if (objects is null || main.GetNodeOrNull("Camera2D") is not BoardCamera cam)
+		{
+			result["skipped"] = "缺少物件管理器或相机";
+			return result;
+		}
+
+		Pile? pile = null;
+		foreach (System.Collections.Generic.KeyValuePair<int, Pile> kv in objects.Piles)
+		{
+			if (kv.Value.Count >= 2 && kv.Value.Top is not null)
+			{
+				pile = kv.Value;
+				break;
+			}
+		}
+
+		TabletopObject? control = null;
+		foreach (TabletopObject obj in objects.AllObjects)
+		{
+			// 对照组必须是<b>正面朝上</b>的卡。
+			// 这里有个坑：卡背底色 #2b3242 和徽章填充色 #2e3440 的距离只有 0.008，
+			// 拿一张盖放的牌当对照，它整片卡背都会被判成"徽章像素"（实测 4963 个），
+			// 这条断言就废了。正面卡的几种底色与徽章色距离都 > 0.07，才是干净的对照。
+			if (obj is CardObject card && !card.IsFaceDown && card.PileId == 0
+				&& card.Visible && DevInputSim.IsOnScreen(cam, card.Position))
+			{
+				control = card;
+				break;
+			}
+		}
+
+		if (pile?.Top is not TabletopObject top || control is null)
+		{
+			result["skipped"] = "找不到「成堆的牌」或「散件对照卡」";
+			return result;
+		}
+
+		// 取样的两张卡都必须完整落在视口里，否则采样区会被裁掉 ——
+		// 那时数出来的是"没画"，而不是"没拍到"，报红会把人引向错误方向。
+		// 近景截图（--zoom 1）下桌面大半在视口外，正是这种情况，所以标记 skipped
+		// （<b>刻意不写 pass</b>：没跑 ≠ 跑挂了，这条约定全项目一致）。
+		if (!FullyVisible(cam, top, frame) || !FullyVisible(cam, control, frame))
+		{
+			result["skipped"] = "堆顶或对照卡不在视口内，徽章像素无从取样（近景视角下属正常）";
+			result["top_card"] = top.Uid;
+			result["control_card"] = control.Uid;
+			return result;
+		}
+
+		int topHits = CountBadgePixels(frame, ScreenRectOf(top, cam));
+		int controlHits = CountBadgePixels(frame, ScreenRectOf(control, cam));
+
+		result["pile_id"] = pile.Id;
+		result["pile_count"] = pile.Count;
+		result["top_card"] = top.Uid;
+		result["top_card_badge_pixels"] = topHits;
+		result["control_card"] = control.Uid;
+		result["control_card_badge_pixels"] = controlHits;
+
+		// 堆顶应当有徽章、散件应当没有。
+		// 阈值取 20：半径 30 的实心圆在 52% 缩放下约 15px 半径，
+		// 就算只有下半部分落在采样区里也远远超过 20 个像素。
+		bool topHas = topHits >= 20;
+		bool controlHas = controlHits < 5;
+
+		result["top_has_badge"] = topHas;
+		result["control_has_no_badge"] = controlHas;
+		result["pass"] = topHas && controlHas;
+		return result;
+	}
+
+	/// <summary>物件的屏幕包围盒是否完整落在这一帧里（留一点边距，避开裁剪）。</summary>
+	private static bool FullyVisible(BoardCamera cam, TabletopObject obj, Image frame)
+	{
+		Rect2 r = ScreenRectOf(obj, cam);
+
+		return r.Position.X >= 4f
+			&& r.Position.Y >= 4f
+			&& r.End.X <= frame.GetWidth() - 4
+			&& r.End.Y <= frame.GetHeight() - 4;
+	}
+
+	/// <summary>在卡面右上角那一块里数"徽章填充色"的像素。</summary>
+	private static int CountBadgePixels(Image img, Rect2 cardScreenRect)
+	{
+		// 取右上角 40% × 40%：徽章圆心在本地 (End.X - r*0.3, Position.Y + r*0.3)，
+		// 半径 30（世界单位），所以它必然落在这个角上。
+		var region = new Rect2(
+			cardScreenRect.Position.X + (cardScreenRect.Size.X * 0.60f),
+			cardScreenRect.Position.Y,
+			cardScreenRect.Size.X * 0.40f,
+			cardScreenRect.Size.Y * 0.40f);
+
+		int x0 = Mathf.Clamp(Mathf.RoundToInt(region.Position.X), 0, img.GetWidth());
+		int y0 = Mathf.Clamp(Mathf.RoundToInt(region.Position.Y), 0, img.GetHeight());
+		int x1 = Mathf.Clamp(Mathf.RoundToInt(region.End.X), 0, img.GetWidth());
+		int y1 = Mathf.Clamp(Mathf.RoundToInt(region.End.Y), 0, img.GetHeight());
+
+		Color badgeFill = GameConfig.PileBadgeFill;
+		int hits = 0;
+
+		for (int y = y0; y < y1; y++)
+		{
+			for (int x = x0; x < x1; x++)
+			{
+				if (ColorDistance(img.GetPixel(x, y), badgeFill) < 0.035f)
+					hits++;
+			}
+		}
+
+		return hits;
 	}
 
 	// ------------------------------------------------------------------ 字体
