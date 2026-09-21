@@ -36,6 +36,9 @@ public partial class Main : Node2D
 	public ViewportController Viewport => _viewport;
 	public Hud Hud => _hud;
 
+	/// <summary>撤销 / 重做（M4）。</summary>
+	public UndoSystem Undo { get; private set; } = null!;
+
 	/// <summary>物件管理器。同时也是场景里的 <c>Objects</c> 容器节点。</summary>
 	public ObjectManager Objects { get; private set; } = null!;
 
@@ -57,6 +60,7 @@ public partial class Main : Node2D
 		Objects = GetNode<ObjectManager>("Objects");
 		SelectionBox = GetNode<SelectionBox>("SelectionBox");
 		Zones = GetNode<ZoneManager>("Zones");
+		Undo = GetNode<UndoSystem>("Undo");
 
 		// M1/M2：先用一份默认桌面主题 + 代码生成的示例内容。
 		// M4 起改为从当前存档的 project.json 读。
@@ -71,6 +75,17 @@ public partial class Main : Node2D
 		// 不依赖 ZoneManager 具体类型（同 M1 的 IWorldPicker / IWheelHandler）。
 		Zones.Bind(Objects, _hud, _hud);
 		Objects.Zones = Zones;
+
+		// 撤销系统要排在最后 Bind：它的初始快照必须是"这一局已经布好"的状态。
+		// 反过来（先 Bind 再 Populate）会让第一步撤销回到一张空桌子。
+		Objects.Undo = Undo;
+		Zones.Undo = Undo;
+		Undo.Bind(Objects, Zones);
+
+		// 拖拽走"起止"两条边而不是"每一步"：一次手势只产出 1 条历史。
+		// 若每帧记一条，拖一张牌 100 帧就是 100 条，Ctrl+Z 要按 100 次。
+		_viewport.PrimaryDragStarted += _ => Undo.BeginGesture();
+		_viewport.PrimaryReleased += _ => Undo.EndGesture();
 
 		DemoContent.Populate(Objects, Zones, _board.BoardRect.GetCenter());
 

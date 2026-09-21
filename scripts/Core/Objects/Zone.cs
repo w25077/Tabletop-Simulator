@@ -289,6 +289,15 @@ public partial class Zone : Node2D
 	// ------------------------------------------------------------------ 洗牌
 
 	/// <summary>
+	/// 主动广播一次成员数变化。
+	///
+	/// 撤销 / 读档是<b>直接改 <c>Members</c> 列表</b>的（走 <c>AddMember</c> 与 <c>Clear</c>），
+	/// 而 HUD 的区域计数挂在 <see cref="MembersChanged"/> 上 —— 不补这一次广播，
+	/// 顶栏就会一直显示撤销之前的张数。症状是"数据对了、HUD 没跟上"。
+	/// </summary>
+	public void EmitCountsChanged() => EmitSignal(SignalName.MembersChanged, Members.Count);
+
+	/// <summary>
 	/// 洗牌：把成员随机重排（Fisher-Yates）。
 	///
 	/// 记下种子是为了复现 —— 和 M2 骰子存 <c>DiceSeed</c> 同一个理由：

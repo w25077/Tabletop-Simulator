@@ -151,12 +151,17 @@ public partial class DevCapture : Node
 		GD.Print("[DevCapture] phase: report build");
 		Godot.Collections.Dictionary report = DevReport.Build(root, GetViewport().GetTexture().GetImage());
 
+		// JSON 地基（M4 第 1 步）：不依赖场景树，所以放在 Main 存在性检查之外。
+		GD.Print("[DevCapture] phase: json simulation");
+		report["json_simulation"] = DevJsonSim.Probe();
+
 		Node? main = root.GetNodeOrNull("Main");
 		if (main?.GetNodeOrNull("Camera2D") is BoardCamera cam &&
 			main.GetNodeOrNull("ViewportController") is ViewportController vc)
 		{
 			ObjectManager? objects = main.GetNodeOrNull<ObjectManager>("Objects");
 			ZoneManager? zones = main.GetNodeOrNull<ZoneManager>("Zones");
+			SceneSnapshot? baseline = null;
 
 			GD.Print("[DevCapture] phase: input simulation");
 			report["input_simulation"] = await DevInputSim.CameraAndPointerProbe(this, cam, vc, objects);
@@ -169,6 +174,11 @@ public partial class DevCapture : Node
 				// 区域那条循环断言的语义是"从开局跑通一局"，所以它得先来。
 				if (zones is not null)
 				{
+					// 开局快照：M4「撤销 = 快照写回」那条断言的比对基准。
+					// 必须在任何操作探针动手之前抓。
+					GD.Print("[DevCapture] phase: baseline snapshot");
+					baseline = DevUndoSim.CaptureBaseline(objects, zones);
+
 					GD.Print("[DevCapture] phase: zone simulation");
 					report["zone_simulation"] = await DevZoneSim.Probe(this, cam, objects, zones);
 				}
@@ -183,12 +193,37 @@ public partial class DevCapture : Node
 				GD.Print("[DevCapture] phase: sequence simulation");
 				report["sequence_simulation"] = await DevSequenceSim.Probe(this, cam, vc, objects, zones);
 
-				// 拆桌检查放最后：它是<b>破坏性</b>的（清空所有区域），
+				// 不变量探针自身的体检放这里：它会短暂注入损坏再还原，
+				// 排在这里才能保证后面没有别的探针去读那份被注入过的状态。
+				if (zones is not null)
+				{
+					GD.Print("[DevCapture] phase: invariant probe self-test");
+					report["invariant_probe"] = DevZoneSim.VerifyInvariants(objects, zones);
+				}
+
+				// 拆桌检查：它是<b>破坏性</b>的（清空所有区域），
 				// 放在前面会让后面几节没东西可测 —— 探针之间不该互相拆台。
 				if (zones is not null)
 				{
 					GD.Print("[DevCapture] phase: zone teardown");
 					report["zone_teardown"] = await DevZoneSim.VerifyTeardown(this, objects, zones);
+				}
+
+				// 快照写回断言排<b>最后</b>：它前面那一百多条断言正好构成了
+				// "把桌子折腾乱"的过程，而它要把桌子恢复成开局的样子并逐字段比对。
+				// 排在拆桌之后是因为拆桌会清空所有区域 —— 恢复快照正好连区域一起验了。
+				if (baseline is not null && zones is not null)
+				{
+					GD.Print("[DevCapture] phase: snapshot restore");
+					report["undo_simulation"] = DevUndoSim.RestoreAndCompare(objects, zones, baseline);
+				}
+
+				// 撤销历史（M4 第 3 步）。排在快照写回之后：
+				// 它自己会 Reset 历史、拖牌、撤销，不依赖前面的桌子状态。
+				if (main.GetNodeOrNull<UndoSystem>("Undo") is UndoSystem undo && zones is not null)
+				{
+					GD.Print("[DevCapture] phase: history simulation");
+					report["history_simulation"] = await DevHistorySim.Probe(this, cam, objects, zones, undo);
 				}
 			}
 		}

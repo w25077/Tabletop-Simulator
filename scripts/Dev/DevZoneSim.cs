@@ -786,8 +786,147 @@ internal static class DevZoneSim
 		return r;
 	}
 
-	// ------------------------------------------------------------------ 12. 桌面散牌框选拖拽 = 仅移动
+	// ------------------------------------------------------------------ 13. 不变量探针自身（防"空转的绿灯"）
 
+	/// <summary>把失败项列表转成可进报告的数组。空数组 = 全绿。</summary>
+	private static Godot.Collections.Array FailuresArray(ZoneInvariantReport report)
+	{
+		var arr = new Godot.Collections.Array();
+		foreach (string name in report.Failures())
+			arr.Add(name);
+
+		return arr;
+	}
+
+	/// <summary>
+	/// 证明那八条不变量<b>真的会吹哨</b>，而且能指名道姓说出是哪一条。
+	///
+	/// 为什么必须有这一节：M4 起八条不变量被抽成公共的 <see cref="ZoneInvariants.Check"/>，
+	/// 撤销与读档写回快照之后要复查它。若这份实现其实是空转的（永远返回绿），
+	/// 那么"撤销之后一致性仍然全绿"这句话<b>毫无价值</b> —— 而它恰恰是 M4 最依赖的一条保证。
+	///
+	/// 做法：先在正常局面上确认全绿（前置），再依次注入 5 种真实发生过的损坏，
+	/// 每种都要求"指定那一条恰好变红"，然后逐个还原。
+	///
+	/// 注入的是<b>真实 bug 的样子</b>，不是随便改个字段：
+	/// 幽灵声明与残留徽章正是 M3 用户实测抓到的两个。
+	/// </summary>
+	internal static Godot.Collections.Dictionary VerifyInvariants(ObjectManager objects, ZoneManager zones)
+	{
+		var r = new Godot.Collections.Dictionary();
+		var c = new Checks(r);
+
+		ZoneInvariantReport clean = ZoneInvariants.Check(objects, zones);
+		c.Put("baseline_is_green", clean.All);
+		r["baseline_failures"] = FailuresArray(clean);
+
+		// ---- 注入 1：成员"不认"自己所属的区域（ZoneId 被清掉）----
+		Zone? host = null;
+		TabletopObject? victim = null;
+		foreach (Zone z in zones.AllZones)
+		{
+			if (z.Count <= 0)
+				continue;
+
+			host = z;
+			victim = z.Members[0];
+			break;
+		}
+
+		if (host is null || victim is null)
+		{
+			c.Put("has_a_member_to_break", false);
+			r["pass"] = c.AllPass();
+			r["note"] = "区域里没有成员，无法注入损坏（近景截图下正常）";
+			return r;
+		}
+
+		c.Put("has_a_member_to_break", true);
+
+		string savedZoneId = victim.ZoneId;
+		victim.ZoneId = "";
+		ZoneInvariantReport broken = ZoneInvariants.Check(objects, zones);
+		c.Put("detects_member_without_zone_id",
+			!broken.All && !broken.ZoneIdMatchesMembership);
+		r["zone_id_break_failures"] = FailuresArray(broken);
+		victim.ZoneId = savedZoneId;
+
+		// ---- 注入 2：半截账本（区域忘了这个成员，成员还认着区域）----
+		//
+		// 走 Zone.Members 而不是 LeaveCurrentZone：后者的职责就是"干净地离开"，
+		// 它会把 ZoneId 一并清掉、根本不是 bug。半截账本的真实形态是
+		// <b>只清了一边</b> —— M3 就是在这里出的事。
+		//
+		// 注意它触发的<b>不是</b> no_orphan_zone_claims：那个名字听起来正对，
+		// 但它问的是"这个区域还在不在"。区域明明还在、只是账本少了一行，
+		// 所以响的是 member_counts_match。（我第一版就断言错了这一条，
+		// 是自检把这个错误纠正过来的。）
+		host.Members.RemoveAt(0);                // 只动区域的账本，不动物件的声明
+		ZoneInvariantReport halfBook = ZoneInvariants.Check(objects, zones);
+		c.Put("detects_half_bookkeeping", !halfBook.All && !halfBook.MemberCountsMatch);
+		r["half_bookkeeping_failures"] = FailuresArray(halfBook);
+		host.Members.Insert(0, victim);          // 还原：账本补齐，声明本来就在
+
+		// ---- 注入 3：孤儿声明（物件自称属于一个<b>根本不存在</b>的区域）----
+		// 这才是 no_orphan_zone_claims 负责的场景：删掉区域、或换了存档，
+		// 物件的 ZoneId 还指着旧 id。每次换档都会遇到，必须能抓住。
+		string savedIdForOrphan = victim.ZoneId;
+		victim.ZoneId = "nope.gone";
+		ZoneInvariantReport orphan = ZoneInvariants.Check(objects, zones);
+		c.Put("detects_orphan_claim", !orphan.All && !orphan.NoOrphanZoneClaims);
+		r["orphan_break_failures"] = FailuresArray(orphan);
+		victim.ZoneId = savedIdForOrphan;
+
+		// ---- 注入 4：PileId 与 ZoneId 同时非零（两套生命周期打架）----
+		TabletopObject? inZone = host.Count > 0 ? host.Members[0] : null;
+		if (inZone is not null)
+		{
+			int savedPileId = inZone.PileId;
+			inZone.PileId = 4242;
+			ZoneInvariantReport overlap = ZoneInvariants.Check(objects, zones);
+			c.Put("detects_pile_zone_overlap",
+				!overlap.All && overlap.PileZoneOverlapCount > 0);
+			inZone.PileId = savedPileId;
+		}
+		else
+		{
+			c.Put("detects_pile_zone_overlap", false);
+		}
+
+		// ---- 注入 5：残留徽章（PileCount 挂着，却不在任何堆/叠放区域里）----
+		TabletopObject? badgeVictim = objects.AllObjects.Count > 0 ? objects.AllObjects[0] : null;
+		if (badgeVictim is not null)
+		{
+			int savedCount = badgeVictim.PileCount;
+			badgeVictim.PileCount = 7;
+			ZoneInvariantReport badge = ZoneInvariants.Check(objects, zones);
+			c.Put("detects_phantom_badge", !badge.All && badge.PhantomBadgeCount > 0);
+
+			// 诊断必须能指到具体是哪一张 —— M3 修这个 bug 时靠的就是这个字段
+			bool named = false;
+			foreach (string d in badge.PhantomBadgeDetail)
+			{
+				if (d.Contains(badgeVictim.Uid, System.StringComparison.Ordinal))
+					named = true;
+			}
+
+			c.Put("phantom_badge_names_the_culprit", named);
+			badgeVictim.PileCount = savedCount;
+		}
+		else
+		{
+			c.Put("detects_phantom_badge", false);
+			c.Put("phantom_badge_names_the_culprit", false);
+		}
+
+		// ---- 收尾：还原之后必须重新全绿 ----
+		c.Put("restored_is_green_again", ZoneInvariants.Check(objects, zones).All);
+
+		r["pass"] = c.AllPass();
+		return r;
+	}
+
+	// ------------------------------------------------------------------ 12. 桌面散牌框选拖拽 = 仅移动
 	/// <summary>
 	/// 用户实测：<b>桌面上已排好位置的几张牌，框选后拖拽，结果被自动合并了；用户要的只是移动。</b>
 	///

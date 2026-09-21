@@ -47,6 +47,15 @@ public interface IZoneInteraction
 	bool TryHandleDrop(IReadOnlyList<TabletopObject> dropped, Vector2 worldPos);
 
 	/// <summary>
+	/// 最近一次拖入被拒的原因（"手牌已满 10/10" / "区域已锁定"）；没有则空串。
+	///
+	/// 用途是让撤销历史里那一行说实话 —— 被拒的那次拖拽，历史里写
+	/// 「移动被拒（手牌已满 10/10）」比"移动 1 个物件"有用得多，
+	/// 因为用户看到牌没进去，会想知道为什么。
+	/// </summary>
+	string LastRejectReason { get; }
+
+	/// <summary>
 	/// 键盘：问区域要不要处理这个键（`S` 洗牌 / `D` 抽牌），
 	/// 落点按"悬停即为目标"解析 —— 鼠标指着哪个区域就作用到哪个。
 	/// </summary>

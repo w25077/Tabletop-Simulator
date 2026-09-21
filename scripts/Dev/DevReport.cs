@@ -407,33 +407,14 @@ internal static class DevReport
 			return result;
 		}
 
-		// 反向统计：每个区域 id 被多少物件"自称"属于
-		var claimed = new System.Collections.Generic.Dictionary<string, int>();
-		int pileZoneOverlap = 0;
-
-		foreach (TabletopObject obj in objects.AllObjects)
-		{
-			if (string.IsNullOrEmpty(obj.ZoneId))
-				continue;
-
-			claimed.TryGetValue(obj.ZoneId, out int n);
-			claimed[obj.ZoneId] = n + 1;
-
-			// PileId 与 ZoneId 必须互斥。同时非零意味着"M2 的自由堆生命周期"
-			// 和"区域的排版"都会去改同一个物件的位置与可见性，必然打架。
-			if (obj.PileId != 0)
-				pileZoneOverlap++;
-		}
+		// 八条一致性不变量现在走 ZoneInvariants.Check（M4 抽出来的公共实现）。
+		// 撤销与读档之后复查的是<b>同一个函数</b> —— 两份实现迟早会分叉，
+		// 而分叉的那一刻自检就是一片绿色的假象。
+		ZoneInvariantReport check = ZoneInvariants.Check(objects, zones);
 
 		var items = new Godot.Collections.Array();
-		bool idMatches = true;
-		bool noDuplicates = true;
-		bool countsMatch = true;
-		bool stackContiguous = true;
-		bool stackVisibleOk = true;
 		int totalMembers = 0;
 		int seenMembers = 0;
-		var memberUids = new System.Collections.Generic.HashSet<string>();
 
 		foreach (Zone zone in zones.AllZones)
 		{
@@ -448,44 +429,16 @@ internal static class DevReport
 				TabletopObject m = zone.Members[i];
 
 				if (!GodotObject.IsInstanceValid(m))
-				{
-					idMatches = false;
 					continue;
-				}
 
 				seenMembers++;
-
-				// 同一个物件不能同时出现在两个区域里
-				if (!memberUids.Add(m.Uid))
-					noDuplicates = false;
-
-				// 成员必须自称属于本区域
-				if (m.ZoneId != zone.Id)
-					idMatches = false;
 
 				if (m.IsFaceDown)
 					faceDown++;
 
 				if (m.Visible)
 					visible++;
-
-				if (zone.Definition.SortMode == Data.ZoneSortMode.Stack)
-				{
-					// 叠放区域的成员序号必须恰好是 0..n-1（排版函数写的就是这个）
-					if (m.PileIndex != i)
-						stackContiguous = false;
-
-					// 只画最上面 PileVisibleDepth 张 —— 下面那些必须是不可见的
-					bool shouldBeVisible = i >= n - GameConfig.PileVisibleDepth;
-					if (m.Visible != shouldBeVisible)
-						stackVisibleOk = false;
-				}
 			}
-
-			// 区域认为自己有 n 个成员，那么"自称属于它"的物件也必须是 n 个
-			claimed.TryGetValue(zone.Id, out int claimedCount);
-			if (claimedCount != n)
-				countsMatch = false;
 
 			items.Add(new Godot.Collections.Dictionary
 			{
@@ -511,89 +464,16 @@ internal static class DevReport
 			});
 		}
 
-		// 有区域 id 被物件自称属于，却根本没有这个区域 —— 只在换档 / 删区域时才出现
-		bool noOrphanClaims = true;
-		foreach (System.Collections.Generic.KeyValuePair<string, int> kv in claimed)
-		{
-			if (zones.Find(kv.Key) is null)
-				noOrphanClaims = false;
-		}
-
-		// 张数徽章只允许在"物件真的处在一个叠放组里"时出现。
-		//
-		// 这一条是补的洞：上面那些不变量全都在看「区域内部」，
-		// 没有任何一条管「物件离开叠放语境之后有没有留下残留」。
-		// 于是出现了这样一个 bug —— 把一张牌放进牌库再拖出来，
-		// 它右上角永远挂着牌库的张数（用户实测：拖出来还带着「30」）。
-		// 数据上它已经不属于任何地方，只有 PileIndex/PileCount 两项是旧的，
-		// 恰好满足徽章绘制条件（PileCount >= 2 且 PileIndex == PileCount - 1）。
-		//
-		// 所以判据写成：PileCount > 0 的物件，必须要么在某个自由堆里、
-		// 要么在某个叠放区域的成员表里，且张数与真实张数一致。
-		int phantomBadges = 0;
-		var phantomDetail = new Godot.Collections.Array();
-
-		foreach (TabletopObject obj in objects.AllObjects)
-		{
-			if (obj.PileCount <= 0)
-				continue;
-
-			bool legit = false;
-
-			if (obj.PileId != 0 && objects.Piles.TryGetValue(obj.PileId, out Pile? pile))
-			{
-				legit = obj.PileCount == pile.Count;
-			}
-			else if (!string.IsNullOrEmpty(obj.ZoneId) && zones.Find(obj.ZoneId) is Zone owner)
-			{
-				legit = owner.Definition.SortMode == Data.ZoneSortMode.Stack
-					&& obj.PileCount == owner.Count;
-			}
-
-			if (legit)
-				continue;
-
-			phantomBadges++;
-
-			if (phantomDetail.Count < 8)
-			{
-				phantomDetail.Add(
-					$"{obj.Uid} zone='{obj.ZoneId}' pile={obj.PileId} index={obj.PileIndex} count={obj.PileCount}");
-			}
-		}
-
-		// 不变量集中在一个字典里。聚合判定直接把整个字典与一遍 ——
-		// 不逐个写键名，从根上杜绝"子项写一个名、聚合读另一个名"
-		// （M2 为此栽过一次：五项子断言全绿却报失败）。
-		var invariants = new Godot.Collections.Dictionary
-		{
-			["zone_id_matches_membership"] = idMatches,
-			["no_member_in_two_zones"] = noDuplicates,
-			["member_counts_match"] = countsMatch,
-			["no_orphan_zone_claims"] = noOrphanClaims,
-			["stack_zones_contiguous"] = stackContiguous,
-			["stack_visible_depth_ok"] = stackVisibleOk,
-			["pile_zone_exclusive"] = pileZoneOverlap == 0,
-			["badge_only_when_stacked"] = phantomBadges == 0,
-		};
-
-		bool all = true;
-		foreach (System.Collections.Generic.KeyValuePair<Variant, Variant> kv in invariants)
-		{
-			if (!kv.Value.AsBool())
-				all = false;
-		}
-
 		result["found"] = true;
 		result["count"] = zones.ZoneCount;
 		result["total_members"] = totalMembers;
 		result["seen_members"] = seenMembers;
-		result["pile_zone_overlap_count"] = pileZoneOverlap;
-		result["phantom_badge_count"] = phantomBadges;
-		result["phantom_badge_detail"] = phantomDetail;
+		result["pile_zone_overlap_count"] = check.PileZoneOverlapCount;
+		result["phantom_badge_count"] = check.PhantomBadgeCount;
+		result["phantom_badge_detail"] = ToVariantArray(check.PhantomBadgeDetail);
 		result["summary"] = zones.CountSummary();
 		result["items"] = items;
-		result["invariants"] = invariants;
+		result["invariants"] = check.Invariants;
 
 		// 说清楚这份不变量的"时间点"，免得被误读成一条持续保证。
 		// 本函数在**所有操作探针运行之前**调用（截图之后、模拟之前），
@@ -603,12 +483,22 @@ internal static class DevReport
 		// "进出区域留下了残留"这类只有操作过才会出现的问题。
 		result["snapshot"] = "开局状态（所有操作探针运行之前）；运行期见 zone_simulation.invariants_after";
 
-		result["pass"] = zones.ZoneCount > 0 && all;
+		result["pass"] = zones.ZoneCount > 0 && check.All;
 		return result;
 	}
 
-	// ------------------------------------------------------------------ 张数徽章（像素级）
+	/// <summary>把字符串列表转成可直接进报告数组。
+	/// <c>Godot.Collections.Array</c> 的元素是 <c>Variant</c>，不能直接吃 <c>string[]</c>。</summary>
+	private static Godot.Collections.Array ToVariantArray(System.Collections.Generic.List<string> items)
+	{
+		var arr = new Godot.Collections.Array();
+		foreach (string s in items)
+			arr.Add(s);
 
+		return arr;
+	}
+
+	// ------------------------------------------------------------------ 张数徽章（像素级）
 	/// <summary>
 	/// 张数徽章到底有没有被画出来 —— <b>在像素上验，不是查字段</b>。
 	///

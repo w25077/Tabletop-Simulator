@@ -34,7 +34,14 @@ public sealed class BoardTheme
 	public Color GridColor { get; set; } = new(1f, 1f, 1f, 0.07f);
 	public Color MajorGridColor { get; set; } = new(1f, 1f, 1f, 0.16f);
 
-	/// <summary>桌面矩形（左上角固定在原点）。</summary>
+	/// <summary>
+	/// 桌面矩形（左上角固定在原点）。
+	///
+	/// <b><c>[JsonIgnore]</c> 是必须的</b>：它是从 <see cref="BoardWidth"/> /
+	/// <see cref="BoardHeight"/> 算出来的。<c>System.Text.Json</c> 默认会把它写进
+	/// <c>project.json</c>（读时又静默丢弃），于是存档里出现一份会与尺寸字段漂移的副本。
+	/// </summary>
+	[System.Text.Json.Serialization.JsonIgnore]
 	public Rect2 BoardRect => new(Vector2.Zero, new Vector2(BoardWidth, BoardHeight));
 
 	public BoardTheme Clone() => new()

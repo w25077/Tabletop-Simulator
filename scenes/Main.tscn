@@ -9,6 +9,7 @@
 [ext_resource type="Script" uid="uid://bge8crumss7xg" path="res://scripts/Core/Hud.cs" id="5_q8u5g"]
 [ext_resource type="Script" uid="uid://s01b5hi5cg0t" path="res://scripts/Dev/DevCapture.cs" id="6_c01mt"]
 [ext_resource type="Script" uid="uid://bea2llpknxlub" path="res://scripts/Core/Objects/ZoneManager.cs" id="7_zones"]
+[ext_resource type="Script" uid="uid://bsjqceoiw1tsc" path="res://scripts/Core/UndoSystem.cs" id="8_undo"]
 
 [node name="Main" type="Node2D" unique_id=1146469549]
 script = ExtResource("1_vcsgt")
@@ -28,6 +29,9 @@ script = ExtResource("4_q8u5g")
 
 [node name="ViewportController" type="Node" parent="." unique_id=1095945218]
 script = ExtResource("3_nxtc6")
+
+[node name="Undo" type="Node" parent="." unique_id=1428753901]
+script = ExtResource("8_undo")
 
 [node name="Camera2D" type="Camera2D" parent="." unique_id=853316051]
 script = ExtResource("4_jlsqs")

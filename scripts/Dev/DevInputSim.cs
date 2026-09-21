@@ -102,6 +102,45 @@ internal static class DevInputSim
 	}
 
 	/// <summary>
+	/// 合成一次完整拖拽（从物件当前位置拖到某个屏幕点）。
+	///
+	/// 第一段必须越过 <see cref="GameConfig.DragThresholdPixels"/>，才会从"待定"
+	/// 变成"拖拽中" —— 否则这次手势会被当成"点击"，区域根本收不到落点。
+	///
+	/// 从 <c>DevZoneSim</c> 搬到这里：撤销系统的断言也要拖拽，
+	/// 而<b>两份各写一份拖拽代码迟早会分叉</b>（M3 已经吃过"辅助函数没跟着升级"的亏）。
+	/// </summary>
+	internal static async Task DragToScreen(Node host, BoardCamera cam, TabletopObject obj, Vector2 screenTarget)
+	{
+		Vector2 start = cam.WorldToScreen(obj.Position);
+		Vector2 delta = screenTarget - start;
+
+		var first = new Vector2(Mathf.Sign(delta.X) * 20f, 0f);
+		if (Mathf.Abs(delta.X) < 25f)
+			first = delta * 0.5f;
+
+		Vector2 second = delta - first;
+
+		PushButton(start, MouseButton.Left, true);
+		await Frame(host);
+		PushMotion(start + first, first);
+		PushMotion(screenTarget, second);
+		PushButton(screenTarget, MouseButton.Left, false);
+
+		await Frame(host);
+		await Frame(host);
+	}
+
+	/// <summary>合成一次右键轻点（用于弹上下文菜单）。</summary>
+	internal static async Task RightClick(Node host, BoardCamera cam, TabletopObject obj)
+	{
+		Vector2 pos = cam.WorldToScreen(obj.Position);
+		PushButton(pos, MouseButton.Right, true);
+		PushButton(pos, MouseButton.Right, false);
+		await Frame(host);
+	}
+
+	/// <summary>
 	/// 在整屏范围里找<b>最空</b>的一个屏幕点：既没有物件压在下面，也不在任何区域矩形内。
 	/// 返回值附带"到最近可见物件的间隙（世界单位）"，让调用方能把空缺程度写进报告。
 	///

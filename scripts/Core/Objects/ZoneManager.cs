@@ -49,6 +49,36 @@ public partial class ZoneManager : Node2D, IZoneInteraction
 
 	private ObjectManager? _objects;
 	private Hud? _hud;
+
+	/// <summary>
+	/// 撤销系统。与 <c>ObjectManager.Undo</c> 同一套路：为 <c>null</c> 时静默跳过记录，
+	/// 区域系统不依赖它也能跑。
+	///
+	/// <b>只记菜单 / 键盘 / 双击那几条路</b>：左键拖入拖出属于"一次手势"，
+	/// 由物件系统在落点统一记一条 —— 这里再记一次就会同一次拖拽产出两条历史。
+	/// </summary>
+	public UndoSystem? Undo { get; set; }
+
+	/// <summary>
+	/// 区域菜单项的描述，供撤销历史使用。
+	///
+	/// 存在的理由与 <c>ObjectManager.DescribeLastDrop</c> 一样：菜单分支里有一半动作
+	/// 只是改一个字段（锁定 / 排版），从快照差异里根本看不出用户点的是哪一项。
+	/// </summary>
+	private string _menuLabel = "";
+
+	/// <summary>
+	/// 记一条历史。<b>同时清掉"菜单默认描述"</b> —— 于是菜单调度口那一步
+	/// 不会为同一个动作再记一条。
+	///
+	/// 各子方法（ShuffleZone / SetSortMode / SetFaceDown / SpreadZone / DrawFrom）
+	/// 也走这里，因为它们同时被键盘与双击调用，描述必须在那里生成才准确。
+	/// </summary>
+	private void RecordHistory(string label, string mergeKey = "")
+	{
+		_menuLabel = "";
+		Undo?.Record(label, mergeKey);
+	}
 	private PopupMenu? _menu;
 
 	/// <summary>菜单是针对哪个区域弹的 —— 菜单项回调只拿得到 id，拿不到区域。</summary>
@@ -145,16 +175,34 @@ public partial class ZoneManager : Node2D, IZoneInteraction
 	/// <summary>清空所有区域及其成员归属（M4 换存档时用）。</summary>
 	public void ClearAll()
 	{
-		foreach (Zone z in _order)
-		{
-			z.ClearMembers();
-			z.QueueFree();
-		}
+		foreach (Zone z in new List<Zone>(_order))
+			RemoveZone(z);
+	}
 
-		_zones.Clear();
-		_order.Clear();
-		_hovered = null;
-		_activeZone = null;
+	/// <summary>
+	/// 删掉一块区域。
+	///
+	/// <b>必须走成员清理</b>（<see cref="Zone.ClearMembers"/>）：只把列表清掉的话，
+	/// 成员会带着 <c>ZoneId</c> 与叠放残留留在桌面上 —— 于是一批物件自称属于
+	/// 一个已经不存在的区域，也就是 <c>ZoneInvariants</c> 里的"孤儿声明"。
+	///
+	/// M4 的撤销需要"删单块区域"这个能力（快照里没有的区域必须消失），
+	/// 所以从原来的 <c>ClearAll</c> 里抽出来，两者共用一条路径。
+	/// </summary>
+	public void RemoveZone(Zone zone)
+	{
+		zone.ClearMembers();
+		zone.QueueFree();
+
+		_zones.Remove(zone.Id);
+		_order.Remove(zone);
+
+		// 被删掉的区域可能正是当前悬停 / 激活的那个，留着会变成悬空引用
+		if (ReferenceEquals(_hovered, zone))
+			_hovered = null;
+
+		if (ReferenceEquals(_activeZone, zone))
+			_activeZone = null;
 
 		EmitSignal(SignalName.ZonesChanged);
 		EmitZoneCounts();
@@ -172,8 +220,7 @@ public partial class ZoneManager : Node2D, IZoneInteraction
 		return null;
 	}
 
-	public string CountSummary()
-	{
+	public string CountSummary()	{
 		if (_order.Count == 0)
 			return "区域 0";
 
@@ -184,7 +231,14 @@ public partial class ZoneManager : Node2D, IZoneInteraction
 		return string.Join(" · ", parts);
 	}
 
-	private void EmitZoneCounts()
+	/// <summary>
+	/// 广播一次"区域张数变了"。
+	///
+	/// 本来是私有的：区域自己的每次增删都会调它。但撤销 / 读档是<b>绕过</b>
+	/// 那些方法直接改 <c>Zone.Members</c> 的，所以需要从外面补一次广播 ——
+	/// 漏了它，顶栏的区域计数会一直停在撤销之前的数字。
+	/// </summary>
+	public void EmitZoneCounts()
 	{
 		string summary = CountSummary();
 		EmitSignal(SignalName.ZoneCountsChanged, summary);
@@ -376,6 +430,10 @@ public partial class ZoneManager : Node2D, IZoneInteraction
 
 		zone.Shuffle();
 		_hud?.Toast($"{zone.DisplayName} 已洗牌（{zone.Count} 张，种子 {zone.LastShuffleSeed}）");
+
+		// 洗牌进历史：它是对已有牌序的操作，撤销就是恢复原来的次序。
+		// 种子写进描述里，于是"这把怎么这么离谱"可复现。
+		RecordHistory($"{zone.DisplayName} 洗牌（{zone.Count} 张，种子 {zone.LastShuffleSeed}）");
 	}
 
 	/// <summary>
@@ -437,6 +495,9 @@ public partial class ZoneManager : Node2D, IZoneInteraction
 			_hud?.Toast($"{dest} 已满，只抽了 {drawn} 张");
 		else if (drawn > 0)
 			_hud?.Toast(drawn == 1 ? $"抽 1 张到{dest}" : $"抽了 {drawn} 张到{dest}");
+
+		if (drawn > 0)
+			RecordHistory($"{zone.DisplayName} 抽 {drawn} 张到{dest}");
 
 		return drawn;
 	}
@@ -668,6 +729,11 @@ public partial class ZoneManager : Node2D, IZoneInteraction
 		if (_activeZone is not Zone zone)
 			return;
 
+		// 默认描述 = 菜单项的文本。菜单里有一半动作只是改一个字段（锁定 / 排版），
+		// 从快照差异里根本看不出用户点的是哪一项 —— 所以描述必须由这里给。
+		// 下面几个方法（ShuffleZone / SetSortMode / …）会用自己的更准确的描述覆盖它。
+		_menuLabel = MenuLabelFor(menuId, zone);
+
 		switch ((MenuId)menuId)
 		{
 			case MenuId.Shuffle:
@@ -716,7 +782,26 @@ public partial class ZoneManager : Node2D, IZoneInteraction
 		}
 
 		EmitZoneCounts();
+
+		// 收口记一条。上面若已有子方法记过（ShuffleZone / SetSortMode / …），
+		// 它们在 RecordHistory 里把 _menuLabel 清空了 —— 于是这里不会重复记。
+		if (_menuLabel.Length > 0)
+		{
+			string label = _menuLabel;
+			_menuLabel = "";
+			Undo?.Record(label);
+		}
 	}
+
+	/// <summary>区域菜单项的中文描述。取不到时返回空串（表示"这一项不改状态"）。</summary>
+	private static string MenuLabelFor(int menuId, Zone zone) => (MenuId)menuId switch
+	{
+		MenuId.PullTop => $"从 {zone.DisplayName} 取出顶牌",
+		MenuId.ToggleEnabled => $"{(zone.Definition.Enabled ? "锁定" : "解锁")} {zone.DisplayName}",
+
+		// 下面这些由对应方法自己记录（它们也被键盘 / 双击走到），这里返回空串
+		_ => "",
+	};
 
 	private void ShowMenuAt(Vector2 screenPos)
 	{
@@ -775,6 +860,7 @@ public partial class ZoneManager : Node2D, IZoneInteraction
 		zone.ApplyLayout();
 		EmitZoneCounts();
 		_hud?.Toast($"已摊开 {members.Count} 张（区域现在是空的）");
+		RecordHistory($"摊开 {zone.DisplayName}（{members.Count} 张）");
 	}
 
 	public void SetSortMode(Zone zone, ZoneSortMode mode)
@@ -782,6 +868,7 @@ public partial class ZoneManager : Node2D, IZoneInteraction
 		zone.Definition.SortMode = mode;
 		zone.ApplyLayout();
 		_hud?.Toast($"{zone.DisplayName} 排版：{(mode == ZoneSortMode.Fan ? "扇形" : "横排")}");
+		RecordHistory($"{zone.DisplayName} 排版改为{(mode == ZoneSortMode.Fan ? "扇形" : "横排")}");
 	}
 
 	public void SetFaceDown(Zone zone, bool faceDown)
@@ -793,5 +880,6 @@ public partial class ZoneManager : Node2D, IZoneInteraction
 		}
 
 		_hud?.Toast($"{zone.DisplayName}：{zone.Count} 张已{(faceDown ? "盖放" : "翻开")}");
+		RecordHistory($"{zone.DisplayName} {zone.Count} 张{(faceDown ? "盖放" : "翻开")}");
 	}
 }

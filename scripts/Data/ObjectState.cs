@@ -88,4 +88,58 @@ public sealed class ObjectState
 		DiceValues = new List<int>(DiceValues),
 		TokenTextOverride = TokenTextOverride,
 	};
+
+	/// <summary>
+	/// 两份状态是否<b>内容相同</b>（不是引用相同）。
+	///
+	/// 用途是撤销系统判断"这次操作到底改了什么"：
+	/// 点一下没拖动、拖回原位、往已经满了的区域再拖一次（被拒）——
+	/// 这些都不该进历史，否则用户按 <c>Ctrl+Z</c> 会觉得"按了没反应"。
+	///
+	/// 位置用<b>严格相等</b>：快照写回是"把值抄回去"，不引入误差；
+	/// 用近似比较会把"其实动了 0.2 像素"当成没动，那条改动就永远撤不掉了。
+	/// </summary>
+	public bool SameAs(ObjectState other)
+	{
+		if (ReferenceEquals(this, other))
+			return true;
+
+		if (Uid != other.Uid || Kind != other.Kind || DefinitionId != other.DefinitionId)
+			return false;
+
+		if (Position != other.Position || RotationDegrees != other.RotationDegrees)
+			return false;
+
+		if (FaceDown != other.FaceDown)
+			return false;
+
+		if (PileId != other.PileId || PileIndex != other.PileIndex || ZoneId != other.ZoneId)
+			return false;
+
+		if (DiceSides != other.DiceSides || DiceCount != other.DiceCount)
+			return false;
+
+		if (TokenTextOverride != other.TokenTextOverride)
+			return false;
+
+		if (FieldOverrides.Count != other.FieldOverrides.Count)
+			return false;
+
+		foreach (KeyValuePair<string, string> kv in FieldOverrides)
+		{
+			if (!other.FieldOverrides.TryGetValue(kv.Key, out string? v) || v != kv.Value)
+				return false;
+		}
+
+		if (DiceValues.Count != other.DiceValues.Count)
+			return false;
+
+		for (int i = 0; i < DiceValues.Count; i++)
+		{
+			if (DiceValues[i] != other.DiceValues[i])
+				return false;
+		}
+
+		return true;
+	}
 }

@@ -76,7 +76,22 @@ public partial class ObjectManager : Node2D, IWorldPicker, IWheelHandler
 	/// </summary>
 	private bool _draggingFromZones;
 
+	/// <summary>
+	/// 刚结束的这次手势干了什么（中文可读），供撤销历史当那一行的描述。
+	///
+	/// 为什么由物件管理器来写而不是让撤销系统猜：<b>只有它知道落点判定的结果</b> ——
+	/// 是被区域收下了、被拒了、并进了一堆、还是只是挪了个位置。
+	/// 撤销系统看到的两份快照差异，这几种情况长得一模一样。
+	/// </summary>
+	private string _lastDropLabel = "";
+
 	// ------------------------------------------------------------------ 属性
+
+	/// <summary>
+	/// 撤销系统。为 <c>null</c> 时所有"记历史"的动作静默跳过 ——
+	/// 物件系统不依赖它也能跑（自检的某些探针、以及 M4 之前的行为）。
+	/// </summary>
+	public UndoSystem? Undo { get; set; }
 
 	/// <summary>卡牌定义池（M5 的编辑器会往里加）。</summary>
 	public Dictionary<string, CardDefinition> CardDefinitions { get; } = new();
@@ -183,6 +198,54 @@ public partial class ObjectManager : Node2D, IWorldPicker, IWheelHandler
 	}
 
 	private string NextUid(string prefix) => $"{prefix}-{++_nextUid:D4}";
+
+	/// <summary>
+	/// uid 计数器。<b>撤销与读档都要把它一起还原</b>。
+	///
+	/// 不还原的后果很具体：删掉一张牌 → 撤销 → 再复制一张，
+	/// 新建的那张会拿到刚被还原的那张的序号，<b>桌面上于是有两个同 uid 的物件</b>。
+	/// 这类 bug 极难查，因为两个物件在代码里长得完全一样，
+	/// 而按 uid 找物件的地方（堆成员、区域成员、存档）会随机命中一个。
+	///
+	/// 注意它不区分前缀：<c>card-0007</c> 与 <c>token-0007</c> 是同一个序号取出来的，
+	/// 所以还原时只能整体还，不能逐类还。
+	/// </summary>
+	public int UidSequence
+	{
+		get => _nextUid;
+		set => _nextUid = value;
+	}
+
+	/// <summary>把绘制次序整体设成给定的顺序（新物件在末尾）。
+	///
+	/// 与 <see cref="SyncDrawOrderToStack"/> 的区别：那个是"段内重排"
+	/// （只换给定这批人的相对次序，不动别人），这个是<b>整体重置</b>。
+	/// 读档与撤销要的是后者 —— 快照里存的就是完整次序（谁压谁）。
+	/// </summary>
+	/// <returns>实际排进去的物件数（若列表里有不认识的对象，会少于传入数）。</returns>
+	public int RestoreDrawOrder(IReadOnlyList<TabletopObject> bottomToTop)
+	{
+		var wanted = new List<TabletopObject>(bottomToTop.Count);
+		foreach (TabletopObject obj in bottomToTop)
+		{
+			if (IsInstanceValid(obj) && _drawOrder.Contains(obj))
+				wanted.Add(obj);
+		}
+
+		// 快照里没有的（理论上不该有）留在末尾，而不是丢掉 ——
+		// 宁可次序不完美，也不能让物件从桌面上凭空消失。
+		foreach (TabletopObject obj in _drawOrder)
+		{
+			if (!wanted.Contains(obj))
+				wanted.Add(obj);
+		}
+
+		_drawOrder.Clear();
+		_drawOrder.AddRange(wanted);
+		ApplyDrawOrder();
+		EmitSignal(SignalName.ObjectCountChanged, _drawOrder.Count);
+		return _drawOrder.Count;
+	}
 
 	private void Register(TabletopObject obj)
 	{
@@ -445,6 +508,10 @@ public partial class ObjectManager : Node2D, IWorldPicker, IWheelHandler
 
 	private void OnPrimaryReleased(Vector2 worldPos)
 	{
+		// 一次手势的落点描述（撤销历史里的那一行文字）。
+		// 在这里统一重置：它描述的是"刚结束的这一次手势"，不能沿用上一次的。
+		_lastDropLabel = "";
+
 		if (_boxSelecting)
 		{
 			_boxSelecting = false;
@@ -472,18 +539,34 @@ public partial class ObjectManager : Node2D, IWorldPicker, IWheelHandler
 		{
 			// 落点在区域里 → 由区域定夺（接受则归位并改朝向，被拒则原地不动）。
 			// 必须放在自由堆逻辑之前：否则一张牌会被"区域收下"和"和桌上的牌粘成一堆"同时处理。
-			if (_zones is null || !_zones.TryHandleDrop(_dragging, worldPos))
+			int dragged = _dragging.Count;
+
+			if (_zones is not null && _zones.TryHandleDrop(_dragging, worldPos))
+			{
+				_lastDropLabel = $"移入区域 {dragged} 个物件";
+			}
+			else
 			{
 				if (GridSnapEnabled)
 					SnapToGrid(_dragging);
 
 				TryMergeAfterDrop(worldPos);
+
+				// 被拒（满了 / 锁定）时区域会给理由，那比"移动 1 个物件"更说明问题
+				string reject = _zones?.LastRejectReason ?? "";
+				if (_lastDropLabel.Length == 0)
+				{
+					_lastDropLabel = reject.Length > 0
+						? $"移动被拒（{reject}）"
+						: $"移动 {dragged} 个物件";
+				}
 			}
 		}
 		else if (_selection.Count == 1 && _selection[0] is DiceObject single)
 		{
 			// 轻点骰子即掷 —— 掷骰是高频操作，不该逼人去右键菜单里翻
 			single.Roll();
+			_lastDropLabel = $"掷骰 {string.Join("/", single.Values)}";
 		}
 
 		_dragging.Clear();
@@ -560,18 +643,22 @@ public partial class ObjectManager : Node2D, IWorldPicker, IWheelHandler
 			if (target is not null)
 			{
 				MergeInto(target, _dragging);
+				_lastDropLabel = "并成一摞";
 				return;
 			}
 
 			DetachFromPile(_dragging[0], keepPosition: true);
-			return;
+			return;   // 描述交给上层统一写"移动 1 个物件"
 		}
 
 		// ---- 2. 拖整堆 ----
 		if (IsExactlyOneExistingPile(_dragging))
 		{
 			if (target is not null)
+			{
 				MergeInto(target, _dragging);
+				_lastDropLabel = $"把两摞合成一摞（{_dragging.Count} 张）";
+			}
 
 			return;   // 落空地：堆不变，位置已经在拖动时跟着走了
 		}
@@ -587,6 +674,36 @@ public partial class ObjectManager : Node2D, IWorldPicker, IWheelHandler
 		// 锚点取"离松手位置最近的那张"，也就是光标底下那张 ——
 		// 一摞牌应该成形在你放手的地方，而不是整组跳到最左边那张上去。
 		GroupIntoPile(_dragging, NearestTo(_dragging, worldPos));
+		_lastDropLabel = $"叠成一摞（{_dragging.Count} 张）";
+	}
+
+	// ------------------------------------------------------------------ 撤销系统的接缝
+
+	/// <summary>刚结束的这次手势的描述（撤销历史里那一行）。空串表示"没什么可说的"。</summary>
+	public string DescribeLastDrop() => _lastDropLabel;
+
+	/// <summary>
+	/// 撤销/读档把状态写回场景之后，物件系统要做的收尾。
+	///
+	/// 快照恢复的是<b>数据</b>，但有几样东西不在数据里：绘制次序要重排、
+	/// 选中集要清干净、物件数变化要广播给 HUD。
+	/// 漏掉任何一样，症状都是"数据对了、画面还停在撤销前"。
+	/// </summary>
+	public void NotifyRestored()
+	{
+		// 写回之后哪些物件还在、次序是什么，都以当前的 _drawOrder 为准
+		ApplyDrawOrder();
+		ClearSelectionInternal();
+
+		_hovered = null;
+		_dragging.Clear();
+		_draggingPiles.Clear();
+
+		EmitSelectionChanged();
+		EmitSignal(SignalName.ObjectCountChanged, _drawOrder.Count);
+
+		foreach (TabletopObject obj in _drawOrder)
+			obj.QueueRedraw();
 	}
 
 	/// <summary>给定一组物件里离某个世界坐标最近的那个。</summary>
@@ -820,14 +937,48 @@ public partial class ObjectManager : Node2D, IWorldPicker, IWheelHandler
 	public void FlipObjects(IReadOnlyList<TabletopObject> targets)
 	{
 		if (TryFlipWholeStack(targets))
+		{
+			RecordHistory($"整摞翻转（{targets.Count} 张）", FlipMergeKey(targets));
 			return;
+		}
 
 		foreach (TabletopObject obj in targets)
 		{
 			obj.IsFaceDown = !obj.IsFaceDown;
 			obj.QueueRedraw();
 		}
+
+		RecordHistory($"翻面 {targets.Count} 个物件", FlipMergeKey(targets));
 	}
+
+	/// <summary>
+	/// 连击合并键：同一组目标才允许合并。
+	///
+	/// 少了"同一组"这个条件，"快速连按 F 翻 5 张不同的牌"会被并成一条
+	/// —— 而那 5 次是 5 个独立意图。用排序后的 uid 拼键就够了：
+	/// 同一组目标 → 同一个键 → 800ms 内合并；换了目标 → 键不同 → 各记一条。
+	/// </summary>
+	private static string FlipMergeKey(IReadOnlyList<TabletopObject> targets)
+		=> $"flip:{TargetKey(targets)}";
+
+	private static string TargetKey(IReadOnlyList<TabletopObject> targets)
+	{
+		var uids = new List<string>(targets.Count);
+		foreach (TabletopObject obj in targets)
+			uids.Add(obj.Uid);
+
+		uids.Sort(System.StringComparer.Ordinal);
+		return string.Join(",", uids);
+	}
+
+	/// <summary>
+	/// 把一次操作记进撤销历史。
+	///
+	/// 收成一个方法是有意的：接历史的地方一旦散落在十几个调用点，
+	/// 迟早会漏一处 —— 而"某个入口没接历史"的症状是"这个操作撤不掉"，
+	/// 用户以为撤销坏了。自检里 <c>every_action_records</c> 专门盯这件事。
+	/// </summary>
+	private void RecordHistory(string label, string mergeKey = "") => Undo?.Record(label, mergeKey);
 
 	/// <summary>目标是否构成一整摞；是则整摞翻过来并返回 true。</summary>
 	private bool TryFlipWholeStack(IReadOnlyList<TabletopObject> targets)
@@ -908,6 +1059,10 @@ public partial class ObjectManager : Node2D, IWorldPicker, IWheelHandler
 			obj.RotationDeg += degrees;
 			obj.QueueRedraw();
 		}
+
+		// 连按 [ / ] 会合并成一条"旋转 60°" —— 撤销时一次退回去，
+		// 而不是按四次才转回原位。
+		RecordHistory($"旋转 {degrees:0.#}°", $"rotate:{TargetKey(targets)}");
 	}
 
 	/// <summary>把角度归零 —— 「转正」用。</summary>
@@ -918,6 +1073,8 @@ public partial class ObjectManager : Node2D, IWorldPicker, IWheelHandler
 			obj.RotationDeg = 0f;
 			obj.QueueRedraw();
 		}
+
+		RecordHistory($"转正 {targets.Count} 个物件");
 	}
 
 	public void DeleteObjects(IReadOnlyList<TabletopObject> targets)
@@ -936,12 +1093,25 @@ public partial class ObjectManager : Node2D, IWorldPicker, IWheelHandler
 			if (ReferenceEquals(_hovered, obj))
 				_hovered = null;
 
+			// <b>先摘出场景树，再 QueueFree。</b>
+			//
+			// QueueFree 是<b>帧末</b>释放，而 AllObjects 是 _drawOrder，
+			// 上面已经把它移出去了 —— 所以对 M2/M3 的代码路径没有区别。
+			// 但 M4 的撤销要在<b>同一帧内</b>把快照写回去（撤销不能等下一帧，
+			// 否则"撤销后立刻截图/断言"看到的是中间态）。
+			// 摘出树之后 IsInstanceValid 立刻转为 false，
+			// 于是"快照里没有的物件还在吗"这类判断当场就有答案。
+			if (obj.GetParent() is not null)
+				RemoveChild(obj);
+
 			obj.QueueFree();
 		}
 
 		EmitSelectionChanged();
 		EmitSignal(SignalName.ObjectCountChanged, _drawOrder.Count);
 		ApplyDrawOrder();
+
+		RecordHistory($"删除 {targets.Count} 个物件");
 	}
 
 	/// <summary>复制物件，副本略微偏移（否则会跟原件完全重叠，看起来像没反应）。</summary>
@@ -963,6 +1133,22 @@ public partial class ObjectManager : Node2D, IWorldPicker, IWheelHandler
 			state.PileIndex = 0;
 			state.ZoneId = "";
 
+			// <b>副本必须换一个 uid。</b>
+			//
+			// 这里原本漏了，后果是"桌面上出现两个同 uid 的物件"：
+			// CaptureState 带来的 uid 非空，而 InstantiateFromState 的规则是
+			// <c>string.IsNullOrEmpty(state.Uid) ? NextUid() : state.Uid</c> ——
+			// 于是刚生成的 uid 被原件那份覆盖，副本与原件完全同名。
+			//
+			// 为什么危险：按 uid 找物件的地方很多（堆成员、区域成员、存档、
+			// 撤销快照写回），同 uid 时它们会随机命中一个。症状是
+			// "撤销之后消失/多出来的不是那一张""读档后有一张牌位置不对"，
+			// 而两个物件在代码里长得完全一样，极难定位。
+			//
+			// 这个 bug 是 M4 做快照写回时被自检抓出来的：
+			// 60 个物件只映射出 36 个不同 uid。断言 undo.uid_unique_on_board 现在常驻。
+			state.Uid = "";
+
 			TabletopObject? copy = InstantiateFromState(state);
 			if (copy is not null)
 				copies.Add(copy);
@@ -973,6 +1159,9 @@ public partial class ObjectManager : Node2D, IWorldPicker, IWheelHandler
 			AddToSelectionInternal(copy);
 
 		EmitSelectionChanged();
+
+		if (copies.Count > 0)
+			RecordHistory($"复制 {copies.Count} 个物件");
 	}
 
 	// ---- 以下四个是"作用于选中集"的版本，右键菜单用（菜单已把选中设成被点的那个）----
@@ -1047,6 +1236,96 @@ public partial class ObjectManager : Node2D, IWorldPicker, IWheelHandler
 		foreach (TabletopObject obj in _drawOrder)
 			list.Add(obj.CaptureState());
 		return list;
+	}
+
+	/// <summary>
+	/// 丢弃全部自由堆，<b>不改动任何物件的字段</b>。
+	///
+	/// 与 <see cref="RebuildPiles"/> 的区别很重要：后者的职责是"把堆重建为给定状态"，
+	/// 所以它开头要先解散旧堆（顺带 <c>ClearStackVisual</c>）。
+	/// 但撤销/读档时，旧堆是<b>上一轮的陈旧结构</b> —— 在快照写回的半途把它解散掉，
+	/// 会把刚由区域排版写好的 <c>PileIndex</c> 一起清掉（陈旧堆的成员关系
+	/// 与快照的成员关系并不一致，那个"解散"清的就是快照里正确的那些值）。
+	/// 所以这条路径只丢结构，字段留给后面的重建去写。
+	/// </summary>
+	public void DropAllPiles()
+	{
+		_piles.Clear();
+		_nextPileId = 1;
+	}
+
+	/// <summary>
+	/// 把自由堆整体重建为给定状态（撤销 / 读档用）。
+	///
+	/// <b>不做任何"合并语义"判断</b>：现有堆全部丢弃，然后严格按
+	/// <c>PileId</c> 分组、<c>PileIndex</c> 定序重建。这是它与
+	/// <see cref="GroupIntoPile"/> / <see cref="MergeInto"/> 的根本区别 ——
+	/// 后两者是"用户动作"，带朝向、位置、可见性的连带处理；
+	/// 而这里是"把已知状态写回去"，一个有副作用就会把快照的语义破坏掉。
+	///
+	/// 成员的<b>位置不动</b>：位置已经在 <c>ApplyState</c> 里逐个写好了，
+	/// 这里的 <c>Position</c> 只是用来给新堆定锚点（取 <c>PileIndex</c> 最小那张）。
+	/// 反过来"按锚点 + 阶梯偏移重算位置"会引入亚像素误差，
+	/// 让"撤销之后位置逐字段一致"这条断言假红。
+	/// </summary>
+	/// <param name="states">完整快照。不在其中的物件会被当作不属于任何堆。</param>
+	public void RebuildPiles(List<ObjectState> states)
+	{
+		// 先丢弃旧堆结构。注意这里<b>不</b>逐个 ClearStackVisual ——
+		// 见 DropAllPiles 的说明：旧堆是上一轮的陈旧结构，解散它会清掉
+		// 快照写回过程中刚写好的正确值。
+		DropAllPiles();
+
+		var byUid = new Dictionary<string, TabletopObject>();
+		foreach (TabletopObject obj in _drawOrder)
+			byUid[obj.Uid] = obj;
+
+		// PileId → (PileIndex → 物件)。用字典而不是"逐张查找插入"，
+		// 因为存档里的 PileIndex 必须被当作权威次序读入，不能靠遍历顺序碰运气。
+		var grouped = new Dictionary<int, SortedDictionary<int, TabletopObject>>();
+
+		foreach (ObjectState s in states)
+		{
+			if (s.PileId == 0 || !byUid.TryGetValue(s.Uid, out TabletopObject? obj))
+				continue;
+
+			// 已被删掉的物件不再进堆。撤销/读档的当下，被删的对象可能还挂在
+			// _drawOrder 之外尚未真正释放 —— IsInstanceValid 是唯一可靠的判据。
+			if (!GodotObject.IsInstanceValid(obj))
+				continue;
+
+			if (!grouped.TryGetValue(s.PileId, out SortedDictionary<int, TabletopObject>? members))
+			{
+				members = new SortedDictionary<int, TabletopObject>();
+				grouped[s.PileId] = members;
+			}
+
+			// 同一 PileIndex 出现两次（坏存档）时后写覆盖先写，不抛异常 ——
+			// 读档要"能开就开、开不了说清楚"，不该在主循环里炸。
+			members[s.PileIndex] = obj;
+		}
+
+		foreach (KeyValuePair<int, SortedDictionary<int, TabletopObject>> kv in grouped)
+		{
+			Pile pile = new(kv.Key);
+			int count = kv.Value.Count;
+			int index = 0;
+
+			foreach (TabletopObject obj in kv.Value.Values)
+			{
+				pile.Members.Add(obj);
+				obj.PileId = pile.Id;
+				obj.PileIndex = index;
+				obj.PileCount = count;   // 派生字段也一并归一化，别留上一轮的旧值
+
+				if (index == 0)
+					pile.Anchor = obj.Position;
+
+				index++;
+			}
+
+			_piles[pile.Id] = pile;
+		}
 	}
 
 	// ------------------------------------------------------------------ 堆叠
@@ -1492,6 +1771,11 @@ public partial class ObjectManager : Node2D, IWorldPicker, IWheelHandler
 		LayoutPile(pile);
 		SyncDrawOrderToStack(pile.Members);
 		_hud?.Toast($"这摞已洗牌（{pile.Count} 张，种子 {seed}）");
+
+		// 洗牌<b>进历史</b>：它是对已有牌序的操作，撤销就是恢复原来的次序
+		// （骰子不同，那个见 UndoSystem 的说明）。种子写进描述里，
+		// 于是"这把怎么这么离谱"可复现。
+		RecordHistory($"洗牌（{pile.Count} 张，种子 {seed}）");
 		return true;
 	}
 
@@ -1499,6 +1783,35 @@ public partial class ObjectManager : Node2D, IWorldPicker, IWheelHandler
 	{
 		if (@event is not InputEventKey key || !key.Pressed || key.Echo)
 			return;
+
+		// 撤销 / 重做。放在<b>最前面</b>：它的目标是"整张桌子"，
+		// 与悬停 / 选中无关，不该被后面的分支抢先。
+		//
+		// 能走到这里说明 UI 控件没吃掉这个键（_UnhandledKeyInput 的定义如此），
+		// 于是"在输入框里按 Ctrl+Z"仍然是撤销输入而不是撤销摆牌 —— 这条自动成立。
+		if (Undo is not null && (key.IsActionPressed("tt_undo") || key.IsActionPressed("tt_redo")))
+		{
+			bool redo = key.IsActionPressed("tt_redo");
+			string label = redo ? Undo.RedoLabel : Undo.UndoLabel;
+			bool did = redo ? Undo.Redo() : Undo.Undo();
+
+			if (did)
+			{
+				_hud?.Toast(label);
+			}
+			else if (Undo.GestureInProgress)
+			{
+				// 见 UndoSystem.Undo 的说明：手势中间不能撤销
+				_hud?.Toast("正在拖拽，先松开鼠标再撤销");
+			}
+			else
+			{
+				_hud?.Toast(redo ? "没有可重做的操作" : "没有可撤销的操作");
+			}
+
+			GetViewport().SetInputAsHandled();
+			return;
+		}
 
 		// 洗牌（R）：悬停在一摞牌上就洗那一摞。
 		// <b>物件优先于区域</b> —— 鼠标指着牌堆里的某张牌时，要洗的是那一摞，

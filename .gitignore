@@ -41,6 +41,11 @@ docs/HANDOFF.md
 docs/STATUS.md
 
 # ---- 第三方插件 ----
-# 只忽略 Godot AI MCP 插件的自更新备份缓存，addons/godot_ai/ 插件本体是提交的。
-# 这个目录是插件每次更新前对自己做的整目录备份，约 5.5 MB / 287 个文件，纯冗余。
+# Godot AI MCP 插件整个不入库：它是**开发工具**，不是项目的一部分 ——
+# 没有它项目照样跑（游戏代码只依赖 Godot 本身）。7.3 MB / 293 个文件，
+# 入库只会让每次 diff 都淹在插件的噪音里。
+#
+# 文件保留在本地工作区，编辑器与 MCP 工具链照常能用。
+# 换机器时按插件的安装说明重新装一份即可。
+/addons/godot_ai/
 /addons/.godot_ai_update/

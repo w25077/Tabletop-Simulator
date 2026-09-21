@@ -117,7 +117,15 @@ public sealed class ZoneDefinition
 
 	public Color BorderColor { get; set; } = ZoneDefaults.DefaultBorder;
 
-	/// <summary>矩形中心 —— <see cref="ZoneSortMode.Stack"/> 的叠放锚点。</summary>
+	/// <summary>
+	/// 矩形中心 —— <see cref="ZoneSortMode.Stack"/> 的叠放锚点。
+	///
+	/// <b><c>[JsonIgnore]</c> 是必须的</b>：它是算出来的，不该进 <c>project.json</c>。
+	/// <c>System.Text.Json</c> 默认会把它<b>写出去</b>、读的时候又静默丢弃 ——
+	/// 于是存档里白多一行，还会与 <see cref="Rect"/> 漂移：
+	/// 手改文件的人改了这一行，重启后毫无效果，因为真相在 <see cref="Rect"/> 里。
+	/// </summary>
+	[System.Text.Json.Serialization.JsonIgnore]
 	public Vector2 Center => Rect.Position + (Rect.Size * 0.5f);
 
 	public ZoneDefinition Clone() => new()
