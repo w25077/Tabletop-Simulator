@@ -47,6 +47,18 @@ dotnet build TabletopSimulator.csproj
 > 最后遍历各盘符下的 `SteamLibrary\steamapps\common\Godot Engine`。
 > 装在别处就设环境变量 `TT_GODOT_EXE`，或给脚本传 `-GodotExe`。
 
+> **关于 `addons/`**：那里面只有 Godot AI MCP 插件，是**开发工具，不是项目依赖** ——
+> 它没有入库（`.gitignore` 挡着），游戏代码只依赖 Godot 本身。
+> 但 `project.godot` 里有两条对它的引用（运行时 helper autoload + 编辑器插件）。
+> **新克隆下来的人**二选一：装一份同样的插件，或者把那两条删掉：
+>
+> ```
+> [autoload]        → 删掉 _mcp_game_helper 那一行
+> [editor_plugins]  → enabled 改成 PackedStringArray()
+> ```
+>
+> 不装也不删的话，编辑器启动时会为找不到的文件报错 —— 不影响游戏本身，只是吵。
+
 ### 操作
 
 **视角**
