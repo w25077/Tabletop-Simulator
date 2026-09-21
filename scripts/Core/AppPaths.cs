@@ -82,6 +82,20 @@ public static class AppPaths
 
 	public const string DefaultSaveName = "存档1";
 
+	/// <summary>
+	/// 当前存档名。<b>它存在的唯一理由是"裸文件名要能自己找到家"</b>：
+	/// <c>CardDefinition.FaceImage</c> 里存的是 <c>face_fire.png</c> 这样的
+	/// <b>裸文件名</b>（存档才能整个拷走），于是在任何要打开它的地方都得先知道
+	/// "现在是哪个存档"。写进定义里就要多一份会漂移的副本，于是收在这里一处。
+	///
+	/// 由 <see cref="SaveSystem"/> 的存 / 读 / 改名三处维护，
+	/// 以及 <c>SavePanel.CreateNew</c>（它不走 Save 之前的路径）。
+	/// </summary>
+	public static string CurrentSave { get; private set; } = DefaultSaveName;
+
+	public static void SetCurrentSave(string saveName)
+		=> CurrentSave = string.IsNullOrWhiteSpace(saveName) ? DefaultSaveName : Sanitize(saveName);
+
 	public static string SaveDir(string saveName) => $"{SavesRoot}/{Sanitize(saveName)}";
 
 	public static string ImagesDir(string saveName) => $"{SaveDir(saveName)}/images";

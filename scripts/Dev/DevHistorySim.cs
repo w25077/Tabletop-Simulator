@@ -160,7 +160,23 @@ internal static class DevHistorySim
 			int n = undo.Count;
 			float rotBefore = target.RotationDeg;
 			DevInputSim.PushKey(key);
-			await DevInputSim.Frame(host);
+
+			// <b>轮询，不是"等一帧就断言"。</b>
+			//
+			// 合成键经 <c>Input.ParseInputEvent</c> 派发，而它一帧只走一个事件 ——
+			// "等一帧"能不能读到结果取决于当帧的派发时刻。实测表现为
+			// <b>偶发</b>：同一个二进制连跑两次，一次 <c>键 F</c> 拿到 0 条
+			// （而 <c>label</c> 还是上一条动作留下的"删除 1 个物件"），另一次正常。
+			// 这正是 M3 那条"一律轮询直到条件成立，绝不写死帧数"的同一类问题。
+			//
+			// 上限 20 帧与右键菜单那条一致（见本文件里 <c>FireMenu</c> 的说明）。
+			int frames = 0;
+			while (frames < 20 && undo.Count <= n)
+			{
+				await DevInputSim.Frame(host);
+				frames++;
+			}
+
 			int gained = undo.Count - n;
 
 			entries[$"键 {key}"] = new Godot.Collections.Dictionary
@@ -170,6 +186,10 @@ internal static class DevHistorySim
 				["rot_before"] = rotBefore,
 				["rot_after"] = target.RotationDeg,
 				["label"] = undo.UndoLabel,
+
+				// 等了多久才有结果：偶发假红时，这个数直接说明"是探针读早了"
+				// 还是"产品真的没记"。没有它就只能猜。
+				["frames_waited"] = frames,
 			};
 
 			if (gained < 1)
@@ -200,9 +220,10 @@ internal static class DevHistorySim
 			{
 				int n = undo.Count;
 				await DevInputSim.PushDoubleClick(host, deckScreen);
-				await DevInputSim.Frame(host);
+				int frames = await WaitForUndoGain(host, undo, n);
 				int gained = undo.Count - n;
 				zoneRecords["双击抽牌"] = gained;
+				zoneRecords["双击抽牌等待帧数"] = frames;
 
 				if (gained < 1)
 					zoneMissing++;
@@ -216,9 +237,10 @@ internal static class DevHistorySim
 
 				int n = undo.Count;
 				DevInputSim.PushKey(Key.R);
-				await DevInputSim.Frame(host);
+				int frames = await WaitForUndoGain(host, undo, n);
 				int gained = undo.Count - n;
 				zoneRecords["R 洗牌"] = gained;
+				zoneRecords["R 洗牌等待帧数"] = frames;
 
 				if (gained < 1)
 					zoneMissing++;
@@ -527,6 +549,26 @@ internal static class DevHistorySim
 		return r;
 	}
 
+	/// <summary>
+	/// 轮询到历史真的多了一条为止（上限 20 帧），返回等了多久。
+	///
+	/// 与右键菜单那条同一个理由：<b>合成输入一帧只派发一个事件</b>，
+	/// 而"等一帧就断言"能不能读到结果取决于当帧的派发时刻 ——
+	/// 症状是同一个二进制连跑两次结果不同，而报告里只有一个 0。
+	/// 把那个 0 旁边写上"等了 N 帧"，一眼就能分开"产品没记"与"探针读早了"。
+	/// </summary>
+	private static async Task<int> WaitForUndoGain(Node host, UndoSystem undo, int baseline)
+	{
+		int frames = 0;
+		while (frames < 20 && undo.Count <= baseline)
+		{
+			await DevInputSim.Frame(host);
+			frames++;
+		}
+
+		return frames;
+	}
+
 	/// <summary>右键弹出物件菜单，然后程序化触发指定的那一项。</summary>
 	private static async Task<bool> FireMenu(
 		Node host, BoardCamera cam, ObjectManager objects, TabletopObject target, MenuAction action)
@@ -534,7 +576,23 @@ internal static class DevHistorySim
 		await DevInputSim.RightClick(host, cam, target);
 
 		PopupMenu? menu = objects.ContextMenu;
-		if (menu is null || !menu.Visible)
+		if (menu is null)
+			return false;
+
+		// <b>轮询等菜单弹出来，不要"右键完就查 Visible"。</b>
+		//
+		// 这是 M2 那条"不要写死帧数、要轮询"的又一实例：`RightClick` 只等了一帧，
+		// 而"右键轻点 → 弹菜单"在 `ViewportController` 里走的是
+		// "按下记候选、**松开时补发**"那条路，于是弹菜单可能落在后面某一帧。
+		// 不等的话 `menu.Visible` 还是假 → 这一项被记成 `fired = false`
+		// → 症状是 <b>`entries = -1`、`pull_from_pile_actually_left = false`</b>，
+		// 看起来像"右键菜单坏了"，其实是探针读早了。
+		//
+		// 实测：同一个二进制连跑两次，一次红一次绿 —— 典型的时序假红。
+		for (int waited = 0; waited < 20 && !menu.Visible; waited++)
+			await DevInputSim.Frame(host);
+
+		if (!menu.Visible)
 			return false;
 
 		// 菜单项是按<b>文本</b>加的（"翻面 (F)" / "顺时针 90°" / …），
@@ -618,6 +676,23 @@ internal static class DevHistorySim
 		undo.TraceMark($"进入 tap 探针（die={(die is null ? "无" : die.Uid)}）");
 		if (die is not null)
 		{
+			// <b>先等它停下来。</b>骰子的动画约 1.2 秒，而动画期间每次改写
+			// <c>Values</c> 都会经过 <c>_current</c>（撤销的"状态真相"）。
+			// 于是"掷前的点数"可能取自动画中途，而点击落在动画尾部时
+			// **这一次点击不会产生新结果** —— 撤销条数不动，而那条断言
+			// <c>dice_tap_records_exactly_one_entry</c> 就会偶发变红。
+			//
+			// 这种红最贵的地方在于它看起来像产品坏了（"点了骰子没反应"），
+			// 而实际上只是探针没有等。
+			int waited = 0;
+			while (die.IsRolling && waited < 400)
+			{
+				await DevInputSim.Frame(host);
+				waited++;
+			}
+
+			records["掷前等待帧数"] = waited;
+
 			var before = new List<int>(die.Values);
 			int n = undo.Count;
 			int cursorBeforeRoll = undo.Cursor;
@@ -627,6 +702,24 @@ internal static class DevHistorySim
 			// Roll() 是同步算出结果的（动画只是滚动显示），所以这里读到的就是最终点数。
 			int gained = undo.Count - n;
 			bool changed = !SameValues(before, die.Values);
+
+			// 点数没变是个**可能真发生**的事（1/20），而不是产品坏了。
+			// 所以这里不直接判红，而是重掷一次再论 —— 与下面"重掷必须换点数"
+			// 那一段同样的处置（见 STATUS 里"断言里必须不同的判据要选必然变化的量"）。
+			if (gained == 1 && !changed)
+			{
+				records["首次点数重复"] = true;
+				await Settle(host, undo);
+
+				var retryBefore = new List<int>(die.Values);
+				int n3 = undo.Count;
+				await DevInputSim.ClickAt(host, cam.WorldToScreen(die.Position));
+				gained = undo.Count - n3;
+				changed = !SameValues(retryBefore, die.Values);
+			}
+
+			records["点数变化"] = changed;
+			records["掷骰前后点数"] = $"{string.Join(",", before)} → {string.Join(",", die.Values)}";
 
 			// `current_matches_scene` 是关键的那一问：撤销系统的 `_current`
 			// 是不是还等于现场。它一旦漂了，"这一次操作改了什么"就是拿一份陈旧状态在算，
@@ -756,11 +849,43 @@ internal static class DevHistorySim
 		// 这两项原来**完全没接历史**（M4 第 4 步补的）。漏接的症状是
 		// "拆错了堆想退回，Ctrl+Z 却没反应" —— 而那一刻正是最想撤销的时刻。
 		TabletopObject? pileMember = FindPileMember(objects, cam);
+
+		Pile? pile = null;
+		int pileId = 0;
+		int membersBefore = 0;
+
+		// <b>靶子必须真的在一个自由堆里。</b>
+		//
+		// <see cref="FindPileMember"/> 只查了 <c>PileId != 0</c>，而"堆已经从
+		// <c>Piles</c> 里消失、成员身上还留着旧 <c>PileId</c>"这种半截状态
+		// 在探针自己前面的折腾里出现过。那时 <c>membersBefore</c> 是 0，
+		// 下面两条断言会因为**前提不成立**而红，而红出来的名字
+		// （"从堆中取出没生效"）会把人引向完全错误的方向。
+		//
+		// 所以这里先把前提查清楚，并且<b>把"前提不成立"与"动作没生效"分开报</b>。
 		if (pileMember is not null)
 		{
-			int pileId = pileMember.PileId;
-			Pile? pile = objects.Piles.TryGetValue(pileId, out Pile? p) ? p : null;
-			int membersBefore = pile?.Count ?? 0;
+			pileId = pileMember.PileId;
+			pile = objects.Piles.TryGetValue(pileId, out Pile? found) ? found : null;
+			membersBefore = pile?.Count ?? 0;
+		}
+
+		if (pileMember is null || pile is null || membersBefore == 0)
+		{
+			c.Put("pull_from_pile_actually_left", false);
+			c.Put("pull_from_pile_is_undoable", false);
+			c.Put("dissolve_pile_actually_dissolved", false);
+			c.Put("pile_target_is_valid", false);
+
+			records["从堆中取出"] = pileMember is null
+				? "屏幕上没有成堆的牌"
+				: $"靶子 {pileMember.Uid} 自称在堆 {pileId} 里，但那个堆不存在或已空";
+
+			wrong += 3;
+		}
+		else
+		{
+			c.Put("pile_target_is_valid", true);
 
 			// 「从堆中取出」：先把整摞选中（菜单项作用于选中集）
 			await DevInputSim.ClickAt(host, cam.WorldToScreen(pileMember.Position));
@@ -774,10 +899,8 @@ internal static class DevHistorySim
 			// 后者在写回快照之后会指向一个已经释放的节点：读它的字段**不报错、
 			// 只是给出无意义的值**，于是断言会在"撤销成功"之后莫名其妙地变红。
 			// 比"堆的张数"则两边都是当时抓下来的整数，怎么折腾都不会失效。
-			int membersAfter = pile is not null && objects.Piles.ContainsKey(pileId)
-				? objects.Piles[pileId].Count
-				: 0;
-			c.Put("pull_from_pile_actually_left", membersBefore > 0 && membersAfter == membersBefore - 1);
+			int membersAfter = objects.Piles.TryGetValue(pileId, out Pile? after) ? after.Count : 0;
+			c.Put("pull_from_pile_actually_left", membersAfter == membersBefore - 1);
 
 			// 再撤回来，让"拆散这堆"能在同一个堆上继续测；并**把时间线归位**（见 Settle）。
 			await Settle(host, undo);
@@ -810,14 +933,6 @@ internal static class DevHistorySim
 				records["拆散这堆"] = "撤回之后找不到堆成员了";
 				wrong++;
 			}
-		}
-		else
-		{
-			c.Put("pull_from_pile_actually_left", false);
-			c.Put("dissolve_pile_actually_dissolved", false);
-			c.Put("pull_from_pile_is_undoable", false);
-			records["从堆中取出"] = "屏幕上没有成堆的牌";
-			wrong += 2;
 		}
 
 		objects.HideAllMenus();

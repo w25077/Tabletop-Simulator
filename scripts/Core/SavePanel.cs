@@ -315,11 +315,15 @@ public partial class SavePanel : Node
 		CurrentSave = saveName;
 		AppPaths.EnsureSaveLayout(saveName);
 
-		// 清空桌子，只留示例定义
+		// 裸文件名的解析基准（定义里的 FaceImage 之类）要跟着当前存档走。
+		AppPaths.SetCurrentSave(saveName);
+
+		// 清空桌子，只留示例定义（含一副示例卡组）
 		_undo.Reset();
 		_zones.ClearAll();
 		_objects.ClearAll();
 		_objects.SeedDemoDefinitions();
+		CardDefinitionService.MarkClean();
 
 		BoardTheme fresh = new();
 		_theme.BoardWidth = fresh.BoardWidth;
@@ -370,6 +374,7 @@ public partial class SavePanel : Node
 	public void SetCurrent(string saveName)
 	{
 		CurrentSave = saveName;
+		AppPaths.SetCurrentSave(saveName);
 		Refresh();
 	}
 

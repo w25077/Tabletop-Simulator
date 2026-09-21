@@ -45,6 +45,9 @@ public partial class Main : Node2D
 	/// <summary>存档界面（M4）。</summary>
 	public SavePanel Save { get; private set; } = null!;
 
+	/// <summary>运行时编辑器（M5）。</summary>
+	public EditorPanel Editor { get; private set; } = null!;
+
 	/// <summary>
 	/// <c>--fresh</c>：跳过"自动载入上次存档"，强制用示例内容开局。
 	///
@@ -127,6 +130,14 @@ public partial class Main : Node2D
 
 		// 存档界面（M4 第 8 步）。
 		Save = SavePanel.Attach(_hud, _hud, _hud.SaveButton, Objects, Zones, _board.Theme, Undo);
+
+		// 运行时编辑器（M5）。挂在 HUD 层的 <c>HudRoot</c> 下、<b>存档面板之后</b> ——
+		// 它是全屏的，先加会挡住顶栏那个「存档 ▾」按钮。
+		Editor = EditorPanel.Attach(_hud, Objects, Zones, _board, _camera, _hud);
+
+		// 「保存」这个动作只有一条路：编辑器的保存按钮与 <c>Ctrl+S</c> 都走 <see cref="Save"/>。
+		// 编辑器不直接依赖 SavePanel 的类型 —— 两者都要存，但"谁来存"只该有一个答案。
+		_hud.SaveRequested = () => Save.SaveNow();
 
 		// ---- 自动载入上次的存档（用户已拍板的决定 1）----
 		//

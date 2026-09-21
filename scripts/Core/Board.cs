@@ -25,18 +25,18 @@ public partial class Board : Node2D
 		QueueRedraw();
 	}
 
-	/// <summary>应用一份桌面主题（重载背景图 + 重绘）。</summary>
+	/// <summary>
+	/// 应用一份桌面主题（重载背景图 + 重绘）。
+	///
+	/// 背景图走 <see cref="TextureStore"/> 而不是 <c>ResourceLoader</c>：
+	/// 导入的图放在存档目录里，<b>不在 Godot 的资源系统里</b>
+	/// （<c>ResourceLoader.Exists</c> 对它是假的，所以 M1 那条路一直没生效过）。
+	/// 走这条之后，编辑器里换一张桌面背景立刻就看得见，不用重启。
+	/// </summary>
 	public void ApplyTheme(BoardTheme theme)
 	{
 		_theme = theme;
-		_backgroundTexture = null;
-
-		if (!string.IsNullOrWhiteSpace(theme.BackgroundImage) &&
-			ResourceLoader.Exists(theme.BackgroundImage))
-		{
-			_backgroundTexture = ResourceLoader.Load<Texture2D>(theme.BackgroundImage);
-		}
-
+		_backgroundTexture = TextureStore.Get(theme.BackgroundImage);
 		QueueRedraw();
 	}
 

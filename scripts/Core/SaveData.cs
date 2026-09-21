@@ -25,6 +25,18 @@ public sealed class SaveProject
 
 	public List<TokenDefinition> Tokens { get; set; } = new();
 
+	/// <summary>
+	/// 卡组（一副牌的配方，M5）。
+	///
+	/// <b>它是"内容"而不是"对局"</b>：卡组是"这副牌由什么组成"，
+	/// 而"这 20 张牌现在分别在哪"属于 <c>state.json</c>。
+	/// 放进这一半，M5 的「组卡组」才不需要碰对局状态。
+	///
+	/// 老存档（这个字段还不存在时写的）读进来得到空列表，
+	/// 于是 <c>decks</c> 缺失不会让旧档炸 —— 只是"还没有卡组"。
+	/// </summary>
+	public List<CardDeck> Decks { get; set; } = new();
+
 	/// <summary>区域定义，<b>次序即建区次序</b>（重叠命中取最后添加的，所以次序是语义）。</summary>
 	public List<ZoneDefinition> Zones { get; set; } = new();
 

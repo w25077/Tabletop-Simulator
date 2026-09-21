@@ -12,6 +12,11 @@ namespace TabletopSimulator.Core;
 ///
 /// 这正好带来一个好处：改图立即生效，不需要重新导入，也不需要重启编辑器 ——
 /// 对「边调卡面边试玩」的玩法验证流程很关键。
+///
+/// <b>路径解析交给 <see cref="ImageImport.ResolvePath"/></b>：定义里存的是裸文件名
+/// （<c>face_fire.png</c>），要拼上"当前存档的 images/ 目录"才找得到。
+/// 这个拼法只能有一处 —— 两处各拼一次的话，其中一处漏改的症状是
+/// "卡片有图、桌面背景没图"这种半死不活的样子。
 /// </summary>
 public static class TextureStore
 {
@@ -19,9 +24,11 @@ public static class TextureStore
 	private static readonly Dictionary<string, Texture2D?> Cache = new();
 
 	/// <summary>按路径取纹理；路径为空或文件不存在返回 <c>null</c>。</summary>
-	public static Texture2D? Get(string path)
+	/// <param name="raw">裸文件名（存档 images/ 下）或已经带目录的完整路径。</param>
+	public static Texture2D? Get(string raw)
 	{
-		if (string.IsNullOrWhiteSpace(path))
+		string path = ImageImport.ResolvePath(raw);
+		if (path.Length == 0)
 			return null;
 
 		if (Cache.TryGetValue(path, out Texture2D? cached))

@@ -1,5 +1,6 @@
 using Godot;
 using TabletopSimulator.Core.Objects;
+using TabletopSimulator.Data;
 
 namespace TabletopSimulator.Core;
 
@@ -24,6 +25,14 @@ public partial class Hud : CanvasLayer
 	private Button _saveButton = null!;
 
 	public Button SaveButton => _saveButton;
+
+	/// <summary>顶栏左侧的「编辑器　F1」按钮（M5.5 第 1 条）。</summary>
+	private Button _editorButton = null!;
+
+	public Button EditorButton => _editorButton;
+
+	/// <summary>按钮当前显示的文字（自检用：验它<b>真的随状态变</b>）。</summary>
+	internal string EditorButtonText => IsInstanceValid(_editorButton) ? _editorButton.Text : "";
 
 	private Board _board = null!;
 	private BoardCamera _camera = null!;
@@ -66,6 +75,46 @@ public partial class Hud : CanvasLayer
 		_saveButton.SetAnchorsPreset(Control.LayoutPreset.TopLeft);
 		_saveButton.Position = new Vector2(8f, 7f);
 		GetNode<Control>("HudRoot").AddChild(_saveButton);
+
+		// 编辑器按钮（M5.5 第 1 条）：与存档按钮同一条横线，排在它右边。
+		//
+		// <b>它存在的唯一理由是"刚进来的人不知道 F1 能开编辑器"。</b>
+		// 原先编辑器只有快捷键一条入口，而"入口不可发现"与"功能不存在"
+		// 在用户的体感上没有区别 —— 这一条是用户实测反馈里排第一的。
+		_editorButton = new Button
+		{
+			Name = "EditorButton",
+			Text = "编辑器　F1",
+			TooltipText = "打开/关闭运行时编辑器（Esc 也能关）",
+			CustomMinimumSize = new Vector2(150f, 28f),
+		};
+
+		_editorButton.SetAnchorsPreset(Control.LayoutPreset.TopLeft);
+		_editorButton.Position = new Vector2(166f, 7f);
+		_editorButton.Pressed += () => EditorToggleRequested?.Invoke();
+		GetNode<Control>("HudRoot").AddChild(_editorButton);
+	}
+
+	/// <summary>
+	/// 顶栏那个编辑器按钮被按下。
+	///
+	/// 与 <see cref="SaveRequested"/> 同一个套路：HUD <b>不依赖 EditorPanel 这个类型</b>。
+	/// 它只是"有人想让编辑器开一下"，至于面板建没建、叫什么，由 <c>Main</c> 装配时接上。
+	/// </summary>
+	public System.Action? EditorToggleRequested { get; set; }
+
+	/// <summary>
+	/// 由 <see cref="EditorPanel"/> 在开关之后回调：让按钮文字反映当前状态。
+	///
+	/// <b>不这么做的话，用户看不出按钮现在是"开"还是"关"</b> ——
+	/// 而它是个普通按钮、不是开关，按下去没有任何视觉反馈。
+	/// </summary>
+	public void SyncEditorButton(bool open)
+	{
+		if (!IsInstanceValid(_editorButton))
+			return;
+
+		_editorButton.Text = open ? "关闭编辑器　Esc" : "编辑器　F1";
 	}
 
 	/// <summary>把 HUD 接到桌面与相机上。</summary>
@@ -179,5 +228,46 @@ public partial class Hud : CanvasLayer
 		_toastTween = CreateTween();
 		_toastTween.TweenInterval(1.6f);
 		_toastTween.TweenProperty(_toastLabel, "modulate:a", 0f, 0.5f);
+	}
+
+	// ------------------------------------------------------------------ 给编辑器的接口
+
+	/// <summary>
+	/// 保存当前存档（<c>Ctrl+S</c> 与编辑器的"保存"按钮共用这一条路）。
+	///
+	/// 由 <c>Main</c> 在装配时接上 —— 存档面板是 M4 建的，编辑器（M5）不该直接
+	/// 依赖它的具体类型：两者都要存，但"谁来存"只该有一个答案。
+	/// </summary>
+	public System.Action? SaveRequested { get; set; }
+
+	public void RequestSave() => SaveRequested?.Invoke();
+
+	/// <summary>
+	/// 在<b>当前视口中心</b>造一张牌 —— 编辑器的"放到桌面"按钮用它。
+	///
+	/// 落在视口中心而不是桌面原点：原点在"适配整桌"的视角下是可以看见的，
+	/// 但用户此刻看的是某个近景局部，新卡落在原点等于"点了一下什么都没发生"。
+	/// </summary>
+	public CardObject SpawnCardAtViewCenter(CardDefinition definition)
+	{
+		if (_objects is null)
+			throw new System.InvalidOperationException("Hud 还没 BindObjects，造不出卡");
+
+		return _objects.SpawnCard(definition, ViewCenterWorld());
+	}
+
+	/// <summary>同上，Token 版。</summary>
+	public TokenObject SpawnTokenAtViewCenter(TokenDefinition definition)
+	{
+		if (_objects is null)
+			throw new System.InvalidOperationException("Hud 还没 BindObjects，造不出 Token");
+
+		return _objects.SpawnToken(definition, ViewCenterWorld());
+	}
+
+	private Vector2 ViewCenterWorld()
+	{
+		Vector2 screen = GetViewport().GetVisibleRect().Size * 0.5f;
+		return _camera is null ? screen : _camera.ScreenToWorld(screen);
 	}
 }

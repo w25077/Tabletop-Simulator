@@ -126,6 +126,15 @@ public partial class ObjectManager : Node2D, IWorldPicker, IWheelHandler
 	/// <summary>Token 定义池。</summary>
 	public Dictionary<string, TokenDefinition> TokenDefinitions { get; } = new();
 
+	/// <summary>
+	/// 卡组池（M5）：一副牌的配方，"哪种卡几张"。
+	///
+	/// 放在物件管理器上而不是各自持有：发牌要同时看到"定义池"与"卡组"两样东西
+	/// （卡组只存 id，得查定义才造得出卡），两份分开持有迟早会出现
+	/// "有人拿到了卡组、却没有对应定义"的中间状态。
+	/// </summary>
+	public Dictionary<string, CardDeck> Decks { get; } = new();
+
 	/// <summary>松手时是否吸附到桌面网格（`G` 键切换）。</summary>
 	public bool GridSnapEnabled { get; set; }
 
@@ -162,6 +171,19 @@ public partial class ObjectManager : Node2D, IWorldPicker, IWheelHandler
 	[Signal] public delegate void SelectionChangedEventHandler(int count);
 	[Signal] public delegate void ObjectCountChangedEventHandler(int count);
 	[Signal] public delegate void GridSnapChangedEventHandler(bool enabled);
+
+	/// <summary>
+	/// 定义池变了（M5 的编辑器改了一张卡 / 一个 Token 的样式）。
+	/// 参数是受影响的定义 id（<b>空串 = 整个池子都变了，比如读档</b>）。
+	///
+	/// 为什么要发信号而不是让编辑器自己去遍历重画：桌面上的物件<b>怎么跟着变</b>
+	/// 是物件系统的知识（哪些卡在用这个定义、实例级覆盖要不要保留），
+	/// 编辑器只该说"这个定义改了"。两处各自遍历的话，
+	/// "编辑器认为改完了、桌上有张卡没跟上"这类不一致迟早出现。
+	/// </summary>
+	[Signal] public delegate void CardDefinitionChangedEventHandler(string definitionId);
+
+	[Signal] public delegate void TokenDefinitionChangedEventHandler(string definitionId);
 
 	// ------------------------------------------------------------------ 装配
 
@@ -225,6 +247,92 @@ public partial class ObjectManager : Node2D, IWorldPicker, IWheelHandler
 	}
 
 	private string NextUid(string prefix) => $"{prefix}-{++_nextUid:D4}";
+
+	// ------------------------------------------------------------------ 定义改动（M5）
+
+	/// <summary>
+	/// 数一数桌上有几张牌在用 <paramref name="definitionId"/> 这份定义。
+	///
+	/// 用途是"删定义之前拦住你"：删掉一个还有 12 张牌在用的定义，
+	/// 那 12 张在存档里就变成"引用了不存在的定义"——而<b>读档时这类物件会被静默跳过</b>，
+	/// 代价是"存档里凭空少牌"。所以宁可不删，先告诉你还有几张在用。
+	/// </summary>
+	public int CountCardInstances(string definitionId)
+	{
+		int n = 0;
+		foreach (TabletopObject obj in _drawOrder)
+		{
+			if (obj is CardObject card && card.Definition.Id == definitionId)
+				n++;
+		}
+
+		return n;
+	}
+
+	/// <summary>同上，Token 版。</summary>
+	public int CountTokenInstances(string definitionId)
+	{
+		int n = 0;
+		foreach (TabletopObject obj in _drawOrder)
+		{
+			if (obj is TokenObject token && token.Definition.Id == definitionId)
+				n++;
+		}
+
+		return n;
+	}
+
+	/// <summary>
+	/// 桌上所有用这份定义的卡<b>立刻重画</b>（M5 的"边改边看"）。
+	///
+	/// 两件事它必须都做，而且次序不能反：
+	/// <list type="number">
+	/// <item><b>把新定义实例交给每一张卡</b>（<c>SetDefinition</c>）。
+	///   只 <c>QueueRedraw</c> 是不够的 —— 卡画的是它<b>持有</b>的那份定义，
+	///   定义池里换了新对象、卡还指着旧的，重画出来还是老样子。</item>
+	/// <item>逐个 <c>QueueRedraw</c>。</item>
+	/// </list>
+	///
+	/// <b>实例级覆盖（<c>FieldOverrides</c>）刻意不动。</b>它是"这一张和别的不同"，
+	/// 改的是定义（模板），不该把某个实例的手改数值冲掉。
+	/// </summary>
+	/// <returns>受影响的卡张数（自检要按它核对，别靠数屏幕）。</returns>
+	public int ApplyCardDefinition(CardDefinition definition)
+	{
+		CardDefinitions[definition.Id] = definition;
+
+		int touched = 0;
+		foreach (TabletopObject obj in _drawOrder)
+		{
+			if (obj is not CardObject card || card.Definition.Id != definition.Id)
+				continue;
+
+			card.SetDefinition(definition);
+			touched++;
+		}
+
+		EmitSignal(SignalName.CardDefinitionChanged, definition.Id);
+		return touched;
+	}
+
+	/// <summary>Token 版：见 <see cref="ApplyCardDefinition"/> 的三条说明。</summary>
+	public int ApplyTokenDefinition(TokenDefinition definition)
+	{
+		TokenDefinitions[definition.Id] = definition;
+
+		int touched = 0;
+		foreach (TabletopObject obj in _drawOrder)
+		{
+			if (obj is not TokenObject token || token.Definition.Id != definition.Id)
+				continue;
+
+			token.SetDefinition(definition);
+			touched++;
+		}
+
+		EmitSignal(SignalName.TokenDefinitionChanged, definition.Id);
+		return touched;
+	}
 
 	/// <summary>
 	/// uid 计数器。<b>撤销与读档都要把它一起还原</b>。
@@ -304,20 +412,26 @@ public partial class ObjectManager : Node2D, IWorldPicker, IWheelHandler
 	}
 
 	/// <summary>
-	/// 往定义池里塞一份<b>示例定义</b>（卡牌 + Token），桌面上不放任何物件。
+	/// 往定义池里塞一份<b>示例定义</b>（卡牌 + Token + 一副示例卡组），桌面上不放任何物件。
 	///
 	/// 用途是"新建存档"：一个连卡牌定义都没有的空存档让人无从下手，
 	/// 而 M5 的运行时编辑器正是从"有卡可改"开始工作的。
-	/// 它是 <see cref="DemoContent.Populate"/> 的一个子集 —— 那份示例内容
-	/// 会在 M5 之后退化成"新建存档的模板"，到时候把这一段并过去即可。
+	///
+	/// 卡组也一起塞：M5 的「组卡组」那一页同样从"有牌可组"开始，
+	/// 而空卡组列表会让人以为功能没做。
 	/// </summary>
 	public void SeedDemoDefinitions()
 	{
-		foreach (CardDefinition card in DemoContent.CreateDemoCardDefinitions())
+		List<CardDefinition> cards = DemoContent.CreateDemoCardDefinitions();
+		foreach (CardDefinition card in cards)
 			CardDefinitions[card.Id] = card;
 
 		foreach (TokenDefinition token in DemoContent.CreateDemoTokenDefinitions())
 			TokenDefinitions[token.Id] = token;
+
+		Decks.Clear();
+		CardDeck starter = DemoContent.CreateStarterDeck(cards);
+		Decks[starter.Id] = starter;
 	}
 
 	// ------------------------------------------------------------------ 拾取

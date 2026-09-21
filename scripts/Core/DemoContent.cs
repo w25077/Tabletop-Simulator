@@ -49,6 +49,9 @@ public static class DemoContent
 	public const string PlayZoneId = "demo.zone.play";
 	public const string PublicZoneId = "demo.zone.public";
 
+	/// <summary>示例卡组的 id（"新建存档"与示例桌面共用同一份）。</summary>
+	public const string StarterDeckId = "demo.deck.starter";
+
 	/// <summary>牌库初始张数。抽牌 / 洗牌的自检都按它推期望值。</summary>
 	public const int DeckSize = 20;
 
@@ -168,6 +171,28 @@ public static class DemoContent
 		};
 	}
 
+	/// <summary>
+	/// 示例卡组：<b>20 张 = 5/5/4/4/2</b>。
+	///
+	/// <b>这个配方原先写死在 <see cref="BuildDeck"/> 的代码里，M5 把它收成了数据。</b>
+	/// 理由见 <see cref="CardDeck"/> 的说明：验玩法最常做的事就是改张数，
+	/// 而写死在代码里意味着"改一次 = 重新编译 + 重启 + 重新摆桌"。
+	///
+	/// 张数固定（不是"每个 4 张"那种凑数）是有用的：自检直接按
+	/// <see cref="DeckSize"/> 推期望值，牌库剩几张、抽了几张都能算。
+	/// </summary>
+	public static CardDeck CreateStarterDeck(IReadOnlyList<CardDefinition> cards)
+	{
+		var deck = new CardDeck { Id = StarterDeckId, DisplayName = "示例卡组" };
+
+		// 次序 = 发牌次序。按定义池的次序取前 5 个，张数 5/5/4/4/2。
+		int[] counts = { 5, 5, 4, 4, 2 };
+		for (int i = 0; i < cards.Count && i < counts.Length; i++)
+			deck.Cards.Add(new CardStack { CardId = cards[i].Id, Count = counts[i] });
+
+		return deck;
+	}
+
 	/// <summary>把区域与示例内容铺到桌面上。</summary>
 	public static void Populate(ObjectManager manager, ZoneManager zones, Vector2 boardCenter)
 	{
@@ -182,6 +207,11 @@ public static class DemoContent
 		foreach (TokenDefinition def in tokens)
 			manager.TokenDefinitions[def.Id] = def;
 
+		// 卡组也要进池子（M5）：桌面上的牌库是从它铺出来的，
+		// 而"编辑器里看不到这 20 张是按什么配方来的"会让人以为卡组功能没接上。
+		CardDeck starter = CreateStarterDeck(cards);
+		manager.Decks[starter.Id] = starter;
+
 		CardDefinition fireball = cards[0];
 		CardDefinition goblin = cards[1];
 		CardDefinition potion = cards[2];
@@ -193,8 +223,8 @@ public static class DemoContent
 		// ---- 区域 ----
 		BuildZones(zones);
 
-		// ---- 牌库：20 张，盖着放进去 ----
-		BuildDeck(manager, zones, fireball, goblin, potion, dragon, placeholder);
+		// ---- 牌库：20 张，盖着放进去。配方来自示例卡组（M5 收口）----
+		BuildDeck(manager, zones, starter);
 
 		// ---- 中带的散件道具（M2 回归的靶子，刻意全在区域之外）----
 		BuildLooseProps(manager, fireball, goblin, potion, dragon, placeholder, damage, shield);
@@ -229,36 +259,32 @@ public static class DemoContent
 	/// 而不是直接往 <c>Zone.Members</c> 里塞 —— 这样"盖放策略、容量、重排"全都由
 	/// 和实战同一份代码处理。示例内容如果是"特殊通道造出来的"，
 	/// 它就会在别人改坏正常路径时依然显示正常，等于一块遮羞布。
+	///
+	/// <b>张数与次序来自 <see cref="CreateStarterDeck"/>，不是这里的字面量。</b>
+	/// 编辑器改完卡组之后，示例桌面与"新建存档"必须给出同一副牌 ——
+	/// 两份各自维护的配方迟早会长得不一样。
 	/// </summary>
-	private static void BuildDeck(
-		ObjectManager manager, ZoneManager zones,
-		CardDefinition fireball, CardDefinition goblin, CardDefinition potion,
-		CardDefinition dragon, CardDefinition placeholder)
+	private static void BuildDeck(ObjectManager manager, ZoneManager zones, CardDeck deck)
 	{
-		Zone? deck = zones.Find(DeckZoneId);
-		if (deck is null)
+		Zone? zone = zones.Find(DeckZoneId);
+		if (zone is null)
 			return;
 
-		// 20 张：5/5/4/4/2。张数固定是为了让自检能直接推出期望值。
-		var recipe = new List<(CardDefinition Def, int Count)>
-		{
-			(fireball, 5),
-			(goblin, 5),
-			(potion, 4),
-			(dragon, 4),
-			(placeholder, 2),
-		};
-
 		var cards = new List<TabletopObject>(DeckSize);
-		Vector2 spawnAt = deck.StackAnchor;
+		Vector2 spawnAt = zone.StackAnchor;
 
-		foreach ((CardDefinition def, int count) in recipe)
+		foreach (string cardId in deck.Expand())
 		{
-			for (int i = 0; i < count; i++)
-				cards.Add(manager.SpawnCard(def, spawnAt));
+			if (!manager.CardDefinitions.TryGetValue(cardId, out CardDefinition? def))
+			{
+				GD.PushWarning($"[DemoContent] 卡组「{deck.Id}」引用了不存在的卡牌定义 {cardId}，已跳过");
+				continue;
+			}
+
+			cards.Add(manager.SpawnCard(def, spawnAt));
 		}
 
-		zones.MoveInto(deck, cards);
+		zones.MoveInto(zone, cards);
 	}
 
 	// ------------------------------------------------------------------ 散件道具

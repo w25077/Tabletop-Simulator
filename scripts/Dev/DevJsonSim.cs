@@ -89,12 +89,14 @@ internal static class DevJsonSim
 		TokenDefinition token = SampleToken();
 		ZoneDefinition zone = SampleZone();
 		BoardTheme theme = SampleTheme();
+		CardDeck deck = SampleDeck();
 
 		// ---- 1. 往返一致 ----
 		c.Put("card_roundtrip", RoundTrip(card, r));
 		c.Put("token_roundtrip", RoundTrip(token, r));
 		c.Put("zone_roundtrip", RoundTrip(zone, r));
 		c.Put("theme_roundtrip", RoundTrip(theme, r));
+		c.Put("deck_roundtrip", RoundTrip(deck, r));
 
 		// 字段条数：**这几个数字是"给人看的提醒"，不是主要防线**。
 		// 它们的作用是"加了字段之后自检会响一下"，逼你回来确认新字段：
@@ -106,6 +108,19 @@ internal static class DevJsonSim
 		c.Put("token_field_count_ok", JsonProperties(typeof(TokenDefinition)).Count == 12);
 		c.Put("zone_field_count_ok", JsonProperties(typeof(ZoneDefinition)).Count == 14);
 		c.Put("theme_field_count_ok", JsonProperties(typeof(BoardTheme)).Count == 12);
+		c.Put("deck_field_count_ok", JsonProperties(typeof(CardDeck)).Count == 3);
+		c.Put("card_stack_field_count_ok", JsonProperties(typeof(CardStack)).Count == 2);
+
+		// ---- 1b. 卡组（M5）----
+		//
+		// 卡组是"发多少张、按什么次序发"的唯一真相，所以除了往返一致，
+		// 还要单独钉住两条语义：TotalCards 不写进 JSON（它是算出来的）、
+		// Expand() 的次序 = 各行的书写次序。
+		// 少了这两条，编辑器里"改了张数却没生效"会一路查不到底。
+		string deckJson = SaveJson.Serialize(deck);
+		c.Put("deck_total_is_not_serialized", !deckJson.Contains("totalCards"));
+		c.Put("deck_expand_keeps_order", ExpandMatchesExpectation(deck));
+		c.Put("deck_total_counts_only_positive", TotalIgnoresNonPositive());
 
 		// ---- 2. 可比性（否则第 1 条是空转的绿灯）----
 		CardDefinition mutated = Clone(card);
@@ -119,6 +134,7 @@ internal static class DevJsonSim
 		c.Put("token_clone_covers_all_fields", CloneCoversAllFields(token));
 		c.Put("zone_clone_covers_all_fields", CloneCoversAllFields(zone));
 		c.Put("theme_clone_covers_all_fields", CloneCoversAllFields(theme));
+		c.Put("deck_clone_covers_all_fields", CloneCoversAllFields(deck));
 
 		// ---- 4. JSON 文本本身要可读（这是"能手改、能 diff"的全部意义）----
 		string zoneJson = SaveJson.Serialize(zone);
@@ -447,6 +463,59 @@ internal static class DevJsonSim
 		GridColor = new Color(1f, 1f, 1f, 0.11f),
 		MajorGridColor = new Color(1f, 1f, 1f, 0.22f),
 	};
+
+	/// <summary>卡组样本：三行，<b>含一行张数为 0</b>（保留行但不发牌的常见状态）。</summary>
+	private static CardDeck SampleDeck() => new()
+	{
+		Id = "sample.deck",
+		DisplayName = "测试卡组",
+		Cards =
+		{
+			new CardStack { CardId = "sample.card", Count = 2 },
+			new CardStack { CardId = "sample.token", Count = 0 },
+			new CardStack { CardId = "other.card", Count = 3 },
+		},
+	};
+
+	// ------------------------------------------------------------------ 卡组语义
+
+	/// <summary>
+	/// 摊开之后必须<b>按书写次序</b>给出 id，且张数为 0 的行不出现在序列里。
+	/// 这条是"发牌次序"唯一的定义处，产品与自检读的是同一个方法。
+	/// </summary>
+	private static bool ExpandMatchesExpectation(CardDeck deck)
+	{
+		List<string> got = deck.Expand();
+		string[] want = { "sample.card", "sample.card", "other.card", "other.card", "other.card" };
+
+		if (got.Count != want.Length)
+			return false;
+
+		for (int i = 0; i < want.Length; i++)
+		{
+			if (!string.Equals(got[i], want[i], System.StringComparison.Ordinal))
+				return false;
+		}
+
+		return true;
+	}
+
+	/// <summary>总张数只数正数，且等于 <c>Expand()</c> 的长度 —— 两处口径必须一致。</summary>
+	private static bool TotalIgnoresNonPositive()
+	{
+		var deck = new CardDeck
+		{
+			Cards =
+			{
+				new CardStack { CardId = "a", Count = 2 },
+				new CardStack { CardId = "b", Count = -5 },   // 手改坏了
+				new CardStack { CardId = "c", Count = 0 },
+				new CardStack { CardId = "d", Count = 3 },
+			},
+		};
+
+		return deck.TotalCards == 5 && deck.Expand().Count == deck.TotalCards;
+	}
 
 	private static CardDefinition Clone(CardDefinition src) => src.Clone();
 }

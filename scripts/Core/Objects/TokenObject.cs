@@ -9,8 +9,13 @@ namespace TabletopSimulator.Core.Objects;
 /// </summary>
 public partial class TokenObject : TabletopObject
 {
-	/// <summary>描边的圆角，方形 Token 用它贴合形状。</summary>
-	private const float SquareCornerRadius = 10f;
+	/// <summary>
+	/// 描边的圆角，方形 Token 用它贴合形状。
+	///
+	/// <b>值住在 <see cref="TokenFaceRenderer"/> 里</b>：编辑器预览也要用它，
+	/// 而"预览的圆角与桌上的圆角"是同一个数才谈得上一致。
+	/// </summary>
+	private const float SquareCornerRadius = TokenFaceRenderer.SquareCornerRadius;
 
 	public override ObjectKind Kind => ObjectKind.Token;
 
@@ -35,111 +40,17 @@ public partial class TokenObject : TabletopObject
 	/// <summary>当前显示的文本（覆盖优先）。</summary>
 	public string CurrentText => string.IsNullOrEmpty(TextOverride) ? Definition.Text : TextOverride;
 
-	protected override void DrawContent()
-	{
-		Vector2 center = Vector2.Zero;
-		float radius = Size.X * 0.5f;
-		TokenDefinition def = Definition;
-
-		switch (def.Shape)
-		{
-			case TokenShape.Circle:
-				DrawCircle(center, radius, def.Fill);
-				DrawArc(center, radius, 0f, Mathf.Tau, 64, def.Border, def.BorderWidth, true);
-				break;
-
-			case TokenShape.Square:
-				DrawFilledBox(LocalRect, def.Fill, def.Border, def.BorderWidth, SquareCornerRadius);
-				break;
-
-			case TokenShape.Hexagon:
-				DrawPolygonShape(RegularPolygon(center, radius, 6, -Mathf.Pi / 2f), def);
-				break;
-
-			case TokenShape.Triangle:
-				DrawPolygonShape(RegularPolygon(center, radius, 3, -Mathf.Pi / 2f), def);
-				break;
-		}
-
-		DrawInnerContent(center, radius);
-	}
-
-	private void DrawInnerContent(Vector2 center, float radius)
-	{
-		TokenDefinition def = Definition;
-		Texture2D? image = TextureStore.Get(def.Image);
-
-		if (image is not null)
-		{
-			float side = radius * 1.15f;
-			DrawTextureRect(image, new Rect2(center - (Vector2.One * side * 0.5f), Vector2.One * side), false);
-		}
-
-		string text = CurrentText;
-		if (string.IsNullOrEmpty(text))
-			return;
-
-		Font font = Fonts.Ui;
-		Vector2 textSize = font.GetStringSize(text, HorizontalAlignment.Left, -1f, def.FontSize);
-		float ascent = font.GetAscent(def.FontSize);
-		float descent = font.GetDescent(def.FontSize);
-		Vector2 pos = center
-			+ new Vector2(-textSize.X * 0.5f, (ascent - descent) * 0.5f)
-			+ new Vector2(0f, def.TextOffsetY);
-
-		DrawString(font, pos, text, HorizontalAlignment.Left, -1f, def.FontSize, def.TextColor);
-	}
-
-	/// <summary>多边形 Token：填充 + 闭合描边。</summary>
-	private void DrawPolygonShape(Vector2[] points, TokenDefinition def)
-	{
-		DrawColoredPolygon(points, def.Fill);
-
-		// 描边要把首点补回末尾才闭合
-		var closed = new Vector2[points.Length + 1];
-		points.CopyTo(closed, 0);
-		closed[^1] = points[0];
-		DrawPolyline(closed, def.Border, def.BorderWidth, true);
-	}
-
-	private static Vector2[] RegularPolygon(Vector2 center, float radius, int sides, float startAngle)
-	{
-		var points = new Vector2[sides];
-		for (int i = 0; i < sides; i++)
-		{
-			float angle = startAngle + (Mathf.Tau * i / sides);
-			points[i] = center + new Vector2(Mathf.Cos(angle), Mathf.Sin(angle)) * radius;
-		}
-
-		return points;
-	}
+	/// <summary>
+	/// 画自己。<b>真正的画法在 <see cref="TokenFaceRenderer"/></b> ——
+	/// 抽出去是为了让 M5 的编辑器预览与桌上这个 Token 用同一份代码，
+	/// 而不是各画各的（那迟早会长得不一样，而"预览好看、桌上不一样"
+	/// 是最让人不信任编辑器的症状）。
+	/// </summary>
+	protected override void DrawContent() => TokenFaceRenderer.Draw(this, Definition, LocalRect, TextOverride);
 
 	/// <summary>圆形 Token 的描边改成圆环，方形走基类的圆角矩形。</summary>
 	protected override void DrawOutlineShape(Rect2 rect, Color color, float width)
-	{
-		if (Definition.Shape == TokenShape.Circle)
-		{
-			float r = (Size.X * 0.5f) + (width * 0.5f);
-			DrawArc(Vector2.Zero, r, 0f, Mathf.Tau, 64, color, width, true);
-			return;
-		}
-
-		base.DrawOutlineShape(rect, color, width);
-	}
-
-	private static readonly StyleBoxFlat Box = new();
-
-	private void DrawFilledBox(Rect2 rect, Color fill, Color border, float borderWidth, float radius)
-	{
-		Box.BgColor = fill;
-		Box.BorderColor = border;
-		Box.DrawCenter = true;
-		Box.ShadowSize = 0;
-		Box.ShadowOffset = Vector2.Zero;
-		Box.SetBorderWidthAll(Mathf.RoundToInt(borderWidth));
-		Box.SetCornerRadiusAll(Mathf.RoundToInt(radius));
-		DrawStyleBox(Box, rect);
-	}
+		=> TokenFaceRenderer.DrawOutline(this, Definition, rect, color, width);
 
 	protected override void CaptureExtra(ObjectState state)
 	{

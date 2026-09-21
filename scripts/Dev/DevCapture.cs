@@ -31,6 +31,7 @@ public partial class DevCapture : Node
 	private const string FlagZoom = "--zoom";
 	private const string FlagCenter = "--center";
 	private const string FlagOpenLog = "--open-log";
+	private const string FlagOpenEditor = "--open-editor";
 
 	public override void _Ready()
 	{
@@ -133,6 +134,16 @@ public partial class DevCapture : Node
 			GetTree().Root.GetNodeOrNull("Main") is Main main && GodotObject.IsInstanceValid(main.Log))
 		{
 			main.Log.Open();
+		}
+
+		// --open-editor：截一张"编辑器开着"的图。与上面同一个理由 ——
+		// 编辑器默认是关的（F1 才开），不这样的话验收图上看不到它，
+		// 而"面板长什么样、有没有挤到屏幕外"恰恰是这一步要人眼确认的东西。
+		if (CmdLine.HasFlag(FlagOpenEditor) &&
+			GetTree().Root.GetNodeOrNull("Main") is Main editorMain &&
+			GodotObject.IsInstanceValid(editorMain.Editor))
+		{
+			editorMain.Editor.Open();
 		}
 
 		// 再等若干帧，让镜头定位、主题应用、字体光栅化都落定。
@@ -268,6 +279,13 @@ public partial class DevCapture : Node
 						GD.Print("[DevCapture] phase: save simulation");
 						report["save_simulation"] = await DevSaveSim.Probe(
 							this, cam, objects, zones, undo, saveMain.Save, saveMain.Board.Theme);
+
+						// 运行时编辑器（M5）。排在存档之后：它会造卡、发牌、改桌面尺寸，
+						// 全是"动手"型的操作。它自己开场抓快照、收尾写回去，
+						// 所以它后面再加探针也不会看到一张被改乱的桌子。
+						GD.Print("[DevCapture] phase: editor simulation");
+						report["editor_simulation"] = await DevEditorSim.Probe(
+							saveMain, objects, zones, undo);
 					}
 				}
 			}

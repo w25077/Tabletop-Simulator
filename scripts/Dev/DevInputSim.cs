@@ -54,6 +54,26 @@ internal static class DevInputSim
 	}
 
 	/// <summary>
+	/// 合成一次按键，<b>并等它真的被派发完</b>。
+	///
+	/// <b>为什么需要它（这条是用一轮排查换来的）：</b>
+	/// <see cref="PushKey"/> 发的是"按下 + 松开"<b>两个</b>事件，而
+	/// <c>Input.ParseInputEvent</c> 把它们排进队列，<b>一帧只派发一个</b>。
+	/// 所以"发完就断言"看到的必然是第一帧之后的状态，而那个"松开"事件
+	/// 会留在队列里，等到<b>后面某一帧</b>才派发 —— 落到那会儿正在跑的另一段探针头上。
+	///
+	/// 症状与 M4 那条「探针不许改变被测对象的状态」是同一类：
+	/// 这里当时表现为"卡面预览整个变黑"，而根因在十几步之外的入口探针里。
+	/// 两帧是够的：第一帧派发按下、第二帧派发松开，此后队列里什么都不剩。
+	/// </summary>
+	internal static async Task PushKeyAndSettle(Node host, Key key)
+	{
+		PushKey(key);
+		await Frame(host);
+		await Frame(host);
+	}
+
+	/// <summary>
 	/// 按下（不松开）一个键。
 	/// 修饰键必须这样处理：物件系统用 <c>Input.IsKeyPressed(Key.Shift)</c> 判断，
 	/// 那读的是 Input 的全局按键状态，一次按下+松开是测不出来的。

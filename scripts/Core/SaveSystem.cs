@@ -43,6 +43,11 @@ public static class SaveSystem
 		foreach (KeyValuePair<string, TokenDefinition> kv in objects.TokenDefinitions)
 			project.Tokens.Add(kv.Value.Clone());
 
+		// 卡组（M5）：它引用的是卡牌 id，所以必须和上面那批定义一起进同一个文件，
+		// 否则读档时会读到一副"引用着还不存在的卡"的牌组。
+		foreach (KeyValuePair<string, CardDeck> kv in objects.Decks)
+			project.Decks.Add(kv.Value.Clone());
+
 		return project;
 	}
 
@@ -52,6 +57,48 @@ public static class SaveSystem
 		project.Zones.Clear();
 		foreach (Zone zone in zones.AllZones)
 			project.Zones.Add(zone.Definition.Clone());
+	}
+
+	/// <summary>把定义池（卡牌 / Token / 卡组）装进内存。<b>读档路径与"新建存档"共用。</b></summary>
+	public static void ApplyDefinitions(SaveProject project, ObjectManager objects)
+	{
+		objects.CardDefinitions.Clear();
+		foreach (CardDefinition card in project.Cards)
+			objects.CardDefinitions[card.Id] = card;
+
+		objects.TokenDefinitions.Clear();
+		foreach (TokenDefinition token in project.Tokens)
+			objects.TokenDefinitions[token.Id] = token;
+
+		ApplyDecks(project, objects);
+	}
+
+	/// <summary>
+	/// 装卡组，并<b>核对每一行引用的卡牌定义在不在</b>。
+	///
+	/// 必须单独成一个方法，因为它在读档路径里有个时机要求：得等定义池装完才能核对。
+	///
+	/// 为什么要主动核对：一行引用不存在的卡，发牌时会被静默跳过 ——
+	/// 于是"20 张的牌库"变成 15 张，而屏幕上没有任何东西说明少了 5 张。
+	/// 这类"数字对不上但没人报错"正是这个项目最贵的一类 bug，所以：
+	/// <list type="bullet">
+	/// <item>发牌那一侧<b>出声</b>（<c>GD.PushWarning</c> 指出是哪个卡组、哪个 id）</item>
+	/// <item>这里也核对一遍，让"读到一个坏卡组"当场可见</item>
+	/// </list>
+	/// </summary>
+	public static void ApplyDecks(SaveProject project, ObjectManager objects)
+	{
+		objects.Decks.Clear();
+		foreach (CardDeck deck in project.Decks)
+		{
+			objects.Decks[deck.Id] = deck;
+
+			foreach (CardStack stack in deck.Cards)
+			{
+				if (!objects.CardDefinitions.ContainsKey(stack.CardId))
+					GD.PushWarning($"[SaveSystem] 卡组「{deck.Id}」引用了不存在的卡牌 {stack.CardId}，发牌时会少 {stack.Count} 张");
+			}
+		}
 	}
 
 	public static bool WriteProject(string saveName, SaveProject project)
@@ -226,6 +273,13 @@ public static class SaveSystem
 			return false;
 
 		AppPaths.WriteLastSave(saveName);
+
+		// 落盘之后"未保存改动"就没了。清在这里而不是让编辑器自己清：
+		// 保存有几条入口（Ctrl+S、菜单、另存为、切档前的自动保存），
+		// 每条各自清一次的话，漏掉的那条会让顶栏永远挂着"未保存"。
+		AppPaths.SetCurrentSave(saveName);
+		CardDefinitionService.MarkClean();
+
 		SaveCount++;
 		LastError = "";
 		return true;
@@ -299,6 +353,9 @@ public static class SaveSystem
 
 		foreach (ZoneDefinition def in project.Zones)
 			zones.AddZone(def);
+
+		// 卡组（M5）：定义池已经装好了，这时候才能判断"卡组引用的卡在不在"。
+		ApplyDecks(project, objects);
 
 		// 3. 物件与区域成员：<b>交给 <c>SceneSnapshot.Restore</c>，不自己再写一遍</b>。
 		//
@@ -377,6 +434,14 @@ public static class SaveSystem
 
 		objects.NotifyRestored();
 		AppPaths.WriteLastSave(saveName);
+
+		// 换存档 = 换一整套 images/ —— 旧存档的纹理缓存对新存档毫无意义，
+		// 留着还会让"文件名相同、内容不同"的两张图互相冒充。
+		TextureStore.Clear();
+
+		AppPaths.SetCurrentSave(saveName);
+		CardDefinitionService.MarkClean();
+
 		LoadCount++;
 
 		if (skipped > 0)
@@ -506,6 +571,11 @@ public static class SaveSystem
 
 		if (AppPaths.ReadLastSave() == oldName)
 			AppPaths.WriteLastSave(newName);
+
+		// 当前存档被改名了 → 裸文件名的解析基准也得跟着改，
+		// 否则卡片立刻全部找不到图（定义里存的是"相对当前存档"的文件名）。
+		if (AppPaths.CurrentSave == oldName)
+			AppPaths.SetCurrentSave(newName);
 
 		return true;
 	}

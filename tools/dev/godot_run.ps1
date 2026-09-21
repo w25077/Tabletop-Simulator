@@ -41,6 +41,10 @@ param(
     [int]$Frames = 40,
     [string]$Zoom = "",
     [string]$Center = "",
+    # Open the runtime editor (M5) before the shot, so the verification image
+    # actually shows the panel. Without this the editor is closed (F1 opens it
+    # at runtime) and the acceptance image proves nothing about its layout.
+    [switch]$OpenEditor,
     [int]$TimeoutSec = 180,
     [string]$GodotExe = $env:TT_GODOT_EXE
 )
@@ -107,6 +111,7 @@ $godotArgs = @(
 )
 if ($Zoom)   { $godotArgs += @("--zoom", $Zoom) }
 if ($Center) { $godotArgs += @("--center", $Center) }
+if ($OpenEditor) { $godotArgs += @("--open-editor") }
 
 # Point the app's save root at the workspace. user:// is not writable inside the
 # harness sandbox, so without this the save/load self-check cannot run at all --
