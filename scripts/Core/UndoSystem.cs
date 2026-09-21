@@ -59,6 +59,24 @@ public partial class UndoSystem : Node
 
 	private int _lastRestoreWarnings = -1;
 
+	/// <summary>
+	/// 是否正在把一份快照写回场景（<see cref="Apply"/> 的执行窗口）。
+	///
+	/// 这个窗口里<b>禁止记录、禁止再撤销</b>。堵的不是假想敌：写回会调用物件系统与
+	/// 区域系统的方法，而"删除物件"那条路原本就会记历史 ——
+	/// 结果是撤销自己产生了一条新历史，把重做那一截连同 <c>_current</c> 一起改坏，
+	/// 症状是「撤销把桌面清空、重做回不来」（用户实测报的就是它）。
+	///
+	/// 现在写回路径已经不再记历史了（见 <c>SceneSnapshot.Restore</c> 里为什么要走
+	/// <c>DeleteObjectsWithoutHistory</c>）。这个标志是<b>第二道锁</b>：
+	/// 将来谁在写回路径里加了一个会记历史的调用，它会当场喊出来，
+	/// 而不是安静地再造一次"撤销把桌子吃掉"。
+	/// </summary>
+	private bool _applying;
+
+	/// <summary>是否正在写回快照（自检要确认它不会卡在 true 上）。</summary>
+	public bool IsApplying => _applying;
+
 	/// <summary>历史条数（不含"当前"那一份）。</summary>
 	public int Count => _entries.Count;
 
@@ -136,6 +154,14 @@ public partial class UndoSystem : Node
 	/// <param name="mergeKey">合并键；空串 = 永不合并。</param>
 	public void Record(string label, string mergeKey = "")
 	{
+		// 写回过程中一律不记 —— 理由见 _applying 的说明。
+		// 出声而不是静默丢弃：静默会把"写回路径里混进了用户动作"这件事藏起来。
+		if (_applying)
+		{
+			GD.PushWarning($"[UndoSystem] 写回快照期间有人要记历史（{label}），已丢弃。写回路径不许记录。");
+			return;
+		}
+
 		SceneSnapshot after = SceneSnapshot.Capture(_objects, _zones);
 
 		if (SceneSnapshot.SameContent(_current, after))
@@ -255,7 +281,7 @@ public partial class UndoSystem : Node
 	/// </summary>
 	public bool Undo()
 	{
-		if (GestureInProgress)
+		if (GestureInProgress || _applying)
 			return false;
 
 		if (!CanUndo)
@@ -270,7 +296,7 @@ public partial class UndoSystem : Node
 	/// <summary>重做一步。手势进行中同样拒绝（与 <see cref="Undo"/> 同一个理由）。</summary>
 	public bool Redo()
 	{
-		if (GestureInProgress)
+		if (GestureInProgress || _applying)
 			return false;
 
 		if (!CanRedo)
@@ -320,25 +346,38 @@ public partial class UndoSystem : Node
 
 	private void Apply(SceneSnapshot snap, string label)
 	{
-		snap.Restore(_objects, _zones);
-		RefreshAfterRestore();
+		// 整个写回过程都在 _applying 窗口里 —— 见该字段的说明。
+		// 用 try/finally 而不是"写完再置回 false"：写回会一路调到物件 / 区域系统，
+		// 万一那里抛异常，标志卡在 true 会让撤销系统<b>永久瘫痪</b>，
+		// 而症状（"按 Ctrl+Z 没反应"）与"历史空了"长得一模一样。
+		_applying = true;
 
-		// <b>写回之后立刻复查八条不变量。</b>
-		//
-		// 这是 M4 最依赖的一条保证：撤销不能把区域与堆的关系弄坏。
-		// 而那类损坏的症状是"牌库显示 20 张、只抽得出 19 张"，
-		// 靠肉眼和普通断言都极难定位 —— 所以让它在这里就爆出来。
-		// 裁判本身是否可信，由自检的 invariant_probe 那一节证明。
-		ZoneInvariantReport check = ZoneInvariants.Check(_objects, _zones);
-		if (!check.All)
+		try
 		{
-			// 同一帧里可能被多次触发，别刷屏
-			int frame = (int)Engine.GetProcessFrames();
-			if (frame != _lastRestoreWarnings)
+			snap.Restore(_objects, _zones);
+			RefreshAfterRestore();
+
+			// <b>写回之后立刻复查八条不变量。</b>
+			//
+			// 这是 M4 最依赖的一条保证：撤销不能把区域与堆的关系弄坏。
+			// 而那类损坏的症状是"牌库显示 20 张、只抽得出 19 张"，
+			// 靠肉眼和普通断言都极难定位 —— 所以让它在这里就爆出来。
+			// 裁判本身是否可信，由自检的 invariant_probe 那一节证明。
+			ZoneInvariantReport check = ZoneInvariants.Check(_objects, _zones);
+			if (!check.All)
 			{
-				_lastRestoreWarnings = frame;
-				GD.PushError($"[UndoSystem] {label} 之后一致性被破坏：{string.Join(", ", check.Failures())}");
+				// 同一帧里可能被多次触发，别刷屏
+				int frame = (int)Engine.GetProcessFrames();
+				if (frame != _lastRestoreWarnings)
+				{
+					_lastRestoreWarnings = frame;
+					GD.PushError($"[UndoSystem] {label} 之后一致性被破坏：{string.Join(", ", check.Failures())}");
+				}
 			}
+		}
+		finally
+		{
+			_applying = false;
 		}
 
 		GD.Print($"[UndoSystem] {label}（历史 {_cursor}/{_entries.Count}）");

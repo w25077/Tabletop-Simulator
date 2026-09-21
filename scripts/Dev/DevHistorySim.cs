@@ -343,12 +343,24 @@ internal static class DevHistorySim
 		// 日志面板还没有 UI（第 6 步才做），这里直接调 ——
 		// 面板做好之后这一段会改成"点面板上的第 N 行"。
 		int total = undo.Count;
+		int cursorBeforeTravel = undo.Cursor;
 		int toStart = undo.TravelTo(0);
 
 		c.Put("travel_to_start_reaches_start", undo.Cursor == 0);
 		c.Put("travel_to_start_disables_undo", !undo.CanUndo);
 		c.Put("travel_to_start_enables_redo", undo.CanRedo);
-		c.Put("travel_to_start_walked_all_steps", toStart == total);
+
+		// <b>比的必须是"走了几步"与"出发时的游标"，不是与历史总条数。</b>
+		//
+		// 两者只在"时间线正好停在末端"时才相等，而这一段前面刚好做过一次撤销
+		// （连击合并那条断言末尾要退一步、看有没有转回原位），
+		// 于是游标后面天然留着一条"重做"。原先写成 `toStart == total`，
+		// 在"写回会偷偷多记历史"的年代<b>恰好</b>成立 —— 那些多出来的脏条目
+		// 把游标顶回了末端，断言于是被喂饱了。那个 bug 修掉之后它才露馅。
+		//
+		// 这与本节开头那条"两次 TravelTo 步数不一定相等"的注释是同一类教训：
+		// 断言写错量，就会在 bug 存在时显绿、在 bug 修好之后显红。
+		c.Put("travel_to_start_walked_all_steps", toStart == cursorBeforeTravel);
 
 		int backToEnd = undo.TravelTo(undo.Count);
 		c.Put("travel_to_end_reaches_end", !undo.CanRedo);
@@ -359,6 +371,7 @@ internal static class DevHistorySim
 		c.Put("travel_to_end_walked_forward", backToEnd >= 0);
 
 		r["travel_steps"] = toStart;
+		r["cursor_before_travel"] = cursorBeforeTravel;
 		r["entries_total"] = total;
 
 		// ---------------------------------------------------------- 7. 容量上限

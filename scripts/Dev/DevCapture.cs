@@ -163,6 +163,16 @@ public partial class DevCapture : Node
 			ZoneManager? zones = main.GetNodeOrNull<ZoneManager>("Zones");
 			SceneSnapshot? baseline = null;
 
+			// 撤销流程的自检排在<b>最前面</b>：它要从"这一局真实的起步状态"往下走，
+			// 而任何先动过手的探针都会把历史重新基准化（见 DevUndoFlowSim 的说明）。
+			// 它自己会走快照写回把桌子恢复原样，所以不给后面的探针留脏状态。
+			if (objects is not null && zones is not null &&
+				main.GetNodeOrNull<UndoSystem>("Undo") is UndoSystem undoAtStart)
+			{
+				GD.Print("[DevCapture] phase: undo flow simulation");
+				report["undo_flow_simulation"] = DevUndoFlowSim.Probe(objects, zones, undoAtStart);
+			}
+
 			GD.Print("[DevCapture] phase: input simulation");
 			report["input_simulation"] = await DevInputSim.CameraAndPointerProbe(this, cam, vc, objects);
 

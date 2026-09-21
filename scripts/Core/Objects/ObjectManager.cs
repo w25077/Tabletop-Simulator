@@ -1077,7 +1077,29 @@ public partial class ObjectManager : Node2D, IWorldPicker, IWheelHandler
 		RecordHistory($"转正 {targets.Count} 个物件");
 	}
 
+	/// <summary>
+	/// 删除物件。<b>这是用户动作，会进历史。</b>
+	/// 快照写回那条路必须用 <see cref="DeleteObjectsWithoutHistory"/>，理由见那边。
+	/// </summary>
 	public void DeleteObjects(IReadOnlyList<TabletopObject> targets)
+		=> DeleteObjectsCore(targets, record: true);
+
+	/// <summary>
+	/// 删除物件但<b>不进历史</b>。快照写回（撤销 / 重做 / 读档）专用。
+	///
+	/// <b>为什么必须分成两条路：</b>写回过程中调 <see cref="DeleteObjects"/> 会顺手
+	/// 记一条"删除 N 个物件"，而那一刻时间线正停在<b>被撤销的那一条之前</b> ——
+	/// 于是 <c>UndoSystem.PushInternal</c> 里"在时间线中间做了新操作就丢掉后面的重做"
+	/// 这条规则会把整个 redo 截断，同时把 <c>_current</c> 改写成一份
+	/// "写回才写了一半"的快照。症状正是用户报的那句<b>「重做不回来」</b>。
+	///
+	/// 这个 bug 是 M4 自检 <c>undo_flow_simulation</c> 抓出来的：
+	/// 7 条历史撤销要按 9 次，而且每退一步都多出一条"删除 36 个物件"。
+	/// </summary>
+	internal void DeleteObjectsWithoutHistory(IReadOnlyList<TabletopObject> targets)
+		=> DeleteObjectsCore(targets, record: false);
+
+	private void DeleteObjectsCore(IReadOnlyList<TabletopObject> targets, bool record)
 	{
 		// 先让区域松手。漏掉这一步 Zone.Members 会留着已释放节点的引用，
 		// 下一次区域排版就会碰到野指针 —— 那是崩溃，不是数据不准。
@@ -1111,7 +1133,9 @@ public partial class ObjectManager : Node2D, IWorldPicker, IWheelHandler
 		EmitSignal(SignalName.ObjectCountChanged, _drawOrder.Count);
 		ApplyDrawOrder();
 
-		RecordHistory($"删除 {targets.Count} 个物件");
+		// 写回路径不许走到这里 —— 那是"把一个已知状态抄回去"，不是用户的动作
+		if (record)
+			RecordHistory($"删除 {targets.Count} 个物件");
 	}
 
 	/// <summary>复制物件，副本略微偏移（否则会跟原件完全重叠，看起来像没反应）。</summary>
@@ -1326,6 +1350,25 @@ public partial class ObjectManager : Node2D, IWorldPicker, IWheelHandler
 
 			_piles[pile.Id] = pile;
 		}
+
+		// <b>堆 id 计数器必须推过重建出来的最大 id。</b>
+		//
+		// 这条是自检 undo_flow_simulation 逼出来的（它跑在其它探针之前，
+		// 而写回会经过这里，于是"写回之后新造一个堆"这条路第一次被走到）：
+		// DropAllPiles 把 _nextPileId 置回 1，而重建出来的堆<b>用的就是快照里的 id</b>
+		// —— 桌面上那张三张牌的示例堆恒为 1 号。于是下一次成堆会造出<b>又一个 1 号堆</b>，
+		// 把 _piles[1] 覆盖掉：老堆那三张牌嘴上还说"我在 1 号堆、共 3 张"，
+		// 而程序按 PileId 查到的却是另一个堆（10 张）—— 张数徽章显示 3、
+		// 拖其中一张会拖动<b>另一个堆</b>的成员。
+		//
+		// 与 uid 计数器是同一类错误（见 UidSequence 的说明），
+		// 只是 uid 撞车的症状是"撤销之后物件身份重叠"，堆 id 撞车的症状是"拖错一批牌"。
+		// 实测报错文本：card-0030 pile=1 index=0 count=3（应为 10）。
+		foreach (int id in _piles.Keys)
+		{
+			if (id >= _nextPileId)
+				_nextPileId = id + 1;
+		}
 	}
 
 	// ------------------------------------------------------------------ 堆叠
@@ -1388,11 +1431,18 @@ public partial class ObjectManager : Node2D, IWorldPicker, IWheelHandler
 		else
 		{
 			DetachFromPile(target, keepPosition: true);
-			pile = new Pile(_nextPileId++)
+
+			// id 由这里统一发，且<b>跳过已被占用的号</b>。
+			// 计数器与 _piles 的对应关系只要有过一次错位（写回、读档、将来 M5 的编辑器），
+			// 这里就会造出一个覆盖现有堆的同号堆 —— 而那种损坏不会报错，
+			// 只会让"拖一张牌带动了另一批牌"。几行查询换掉一整类脏数据，值得。
+			int id = NextFreePileId();
+			pile = new Pile(id)
 			{
 				Anchor = target.Position,
 			};
-			_piles[pile.Id] = pile;
+
+			_piles[id] = pile;
 			pile.Members.Add(target);
 		}
 
@@ -1407,6 +1457,22 @@ public partial class ObjectManager : Node2D, IWorldPicker, IWheelHandler
 
 		LayoutPile(pile);
 		ApplyDrawOrder();
+	}
+
+	/// <summary>
+	/// 取一个还没被占用的堆 id。
+	///
+	/// <b>唯一性不能只靠计数器。</b>计数器会在"丢堆 / 重建堆"的路上被重置
+	/// （<see cref="DropAllPiles"/> 置回 1，而 <see cref="RebuildPiles"/> 用的是快照里的 id），
+	/// 而堆 id 一旦撞车就是静默的数据损坏：两个堆共用一个 id，
+	/// 按 PileId 查成员的地方会随机命中一个。详见 <see cref="RebuildPiles"/> 末尾的说明。
+	/// </summary>
+	private int NextFreePileId()
+	{
+		while (_piles.ContainsKey(_nextPileId))
+			_nextPileId++;
+
+		return _nextPileId++;
 	}
 
 	/// <summary>把物件从它所在的堆里摘出来。堆剩不到两张就散堆。</summary>

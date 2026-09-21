@@ -184,7 +184,15 @@ internal sealed class SceneSnapshot
 		if (extra.Count > 0)
 		{
 			zones.ForgetObjects(extra);      // 先让区域/堆松手，别留野引用
-			objects.DeleteObjects(extra);
+
+			// <b>必须走"不记历史"的那条删除。</b>
+			//
+			// 这里原本调的是面向用户动作的 DeleteObjects，于是写回过程中会插进一条
+			// "删除 N 个物件"：它落在被撤销的那一条<b>之前</b>，
+			// 正好触发"在时间线中间做新操作 → 丢掉后面的重做"，
+			// 而 _current 也被改写成写了一半的快照。
+			// 用户看到的就是「撤销把桌面清空、Ctrl+Y 再也回不来」。
+			objects.DeleteObjectsWithoutHistory(extra);
 		}
 
 		LastExtraRemoved = extra.Count;

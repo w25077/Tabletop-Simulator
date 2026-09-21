@@ -76,8 +76,22 @@ public partial class Main : Node2D
 		Zones.Bind(Objects, _hud, _hud);
 		Objects.Zones = Zones;
 
-		// 撤销系统要排在最后 Bind：它的初始快照必须是"这一局已经布好"的状态。
-		// 反过来（先 Bind 再 Populate）会让第一步撤销回到一张空桌子。
+		// ---- 开局内容先布好 ----
+		//
+		// <b>这三行的顺序是修完一个真 bug 之后定下来的，别调换。</b>
+		//
+		// 撤销系统的初始快照必须是"这一局已经布好"的那张桌子。原来写成
+		// "先 Bind 再 Populate"，于是历史起点是一张<b>空桌子</b>，
+		// 而玩家一路 Ctrl+Z 退到底时，那一步写回就会把整个桌面删光 ——
+		// 删除还会走写回路径顺手记一条历史，把重做那一截一起吃掉。
+		// 用户实测报的「一直撤销会删除桌面全部内容，且重做不回来」正是这个：
+		// 第一次拖动就把它记成了"之前"（手势的起点快照取自 <c>_current</c>）。
+		//
+		// 自检 undo_flow_simulation 现在常驻盯这件事：撤销到底必须回到开局的桌面。
+		DemoContent.Populate(Objects, Zones, _board.BoardRect.GetCenter());
+
+		// 撤销系统最后接上 —— 连"记历史"的引用都在 Populate 之后才给，
+		// 于是示例内容无论将来走哪条路都不可能混进历史。
 		Objects.Undo = Undo;
 		Zones.Undo = Undo;
 		Undo.Bind(Objects, Zones);
@@ -86,8 +100,6 @@ public partial class Main : Node2D
 		// 若每帧记一条，拖一张牌 100 帧就是 100 条，Ctrl+Z 要按 100 次。
 		_viewport.PrimaryDragStarted += _ => Undo.BeginGesture();
 		_viewport.PrimaryReleased += _ => Undo.EndGesture();
-
-		DemoContent.Populate(Objects, Zones, _board.BoardRect.GetCenter());
 
 		FrameInitialView();
 	}
