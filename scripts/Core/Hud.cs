@@ -20,6 +20,11 @@ public partial class Hud : CanvasLayer
 	private Button _zoom100Button = null!;
 	private Label _toastLabel = null!;
 
+	/// <summary>顶栏左侧的「存档 ▾」按钮（M4 第 8 步）。宽高在这里定，位置靠锚点。</summary>
+	private Button _saveButton = null!;
+
+	public Button SaveButton => _saveButton;
+
 	private Board _board = null!;
 	private BoardCamera _camera = null!;
 	private ObjectManager? _objects;
@@ -42,6 +47,25 @@ public partial class Hud : CanvasLayer
 		_toastLabel = GetNode<Label>("HudRoot/Layout/ToastLabel");
 
 		_toastLabel.Modulate = new Color(1f, 1f, 1f, 0f);
+
+		// 存档按钮建在代码里、直接挂 HudRoot。
+		//
+		// 为什么不像别的控件那样进 Main.tscn 的 TopRow：那样就得手工编辑场景文件，
+		// 而 M3 已经吃过一次亏 —— 编辑器把内存里的旧场景写了回去，手改的内容整段消失。
+		// 按钮只需要"贴左上角、在顶栏高度内"，两个锚点就够了，不必进布局容器。
+		//
+		// 位置压在 SaveNameLabel（同一个地方）上面：那个标签是 M1 留下的占位显示，
+		// 现在由这个按钮取代它的职责 —— 按钮的文字里就写着当前存档名。
+		_saveButton = new Button
+		{
+			Name = "SaveButton",
+			Text = "存档 ▾",
+			CustomMinimumSize = new Vector2(150f, 28f),
+		};
+
+		_saveButton.SetAnchorsPreset(Control.LayoutPreset.TopLeft);
+		_saveButton.Position = new Vector2(8f, 7f);
+		GetNode<Control>("HudRoot").AddChild(_saveButton);
 	}
 
 	/// <summary>把 HUD 接到桌面与相机上。</summary>

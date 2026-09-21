@@ -179,6 +179,16 @@ public static class AppPaths
 		return f?.GetAsText().Trim() ?? string.Empty;
 	}
 
+	/// <summary>
+	/// 清掉"上次打开的存档"。
+	///
+	/// 与 <c>WriteLastSave("")</c> 的区别只是意图更明确，但两件事它必须都做到：
+	/// 清空文件内容，<b>并且让 <see cref="ReadLastSave"/> 读回空串</b>。
+	/// 少了后半句，下次启动会拿着一个找不到的名字去读档 ——
+	/// 症状是"每次开都弹一次读档失败"。
+	/// </summary>
+	public static void ClearLastSave() => WriteLastSave(string.Empty);
+
 	/// <summary>把 <c>user://</c> 路径转成系统绝对路径（打日志 / 给用户看时用）。</summary>
 	public static string ToAbsolute(string userPath) => ProjectSettings.GlobalizePath(userPath);
 }

@@ -303,6 +303,23 @@ public partial class ObjectManager : Node2D, IWorldPicker, IWheelHandler
 		EmitSignal(SignalName.ObjectCountChanged, 0);
 	}
 
+	/// <summary>
+	/// 往定义池里塞一份<b>示例定义</b>（卡牌 + Token），桌面上不放任何物件。
+	///
+	/// 用途是"新建存档"：一个连卡牌定义都没有的空存档让人无从下手，
+	/// 而 M5 的运行时编辑器正是从"有卡可改"开始工作的。
+	/// 它是 <see cref="DemoContent.Populate"/> 的一个子集 —— 那份示例内容
+	/// 会在 M5 之后退化成"新建存档的模板"，到时候把这一段并过去即可。
+	/// </summary>
+	public void SeedDemoDefinitions()
+	{
+		foreach (CardDefinition card in DemoContent.CreateDemoCardDefinitions())
+			CardDefinitions[card.Id] = card;
+
+		foreach (TokenDefinition token in DemoContent.CreateDemoTokenDefinitions())
+			TokenDefinitions[token.Id] = token;
+	}
+
 	// ------------------------------------------------------------------ 拾取
 
 	public Node2D? PickTopmost(Vector2 worldPos) => PickTopmostExcluding(worldPos, null);

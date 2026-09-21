@@ -42,6 +42,18 @@ public partial class Main : Node2D
 	/// <summary>操作日志面板（M4）。</summary>
 	public LogPanel Log { get; private set; } = null!;
 
+	/// <summary>存档界面（M4）。</summary>
+	public SavePanel Save { get; private set; } = null!;
+
+	/// <summary>
+	/// <c>--fresh</c>：跳过"自动载入上次存档"，强制用示例内容开局。
+	///
+	/// 自检要用它。所有断言都建立在示例内容之上（牌库 20 张、散件位置固定、
+	/// 八条不变量），若上一次自检留下的存档被自动载入，整份报告就没有基准了 ——
+	/// 而那种失败会表现为"十几条互不相关的断言同时变红"。
+	/// </summary>
+	private const string FlagFresh = "--fresh";
+
 	/// <summary>物件管理器。同时也是场景里的 <c>Objects</c> 容器节点。</summary>
 	public ObjectManager Objects { get; private set; } = null!;
 
@@ -113,12 +125,77 @@ public partial class Main : Node2D
 		// （编辑器把内存里旧场景写回去过一次，代价很大）。
 		Log = LogPanel.Attach(_hud, Undo, _hud);
 
+		// 存档界面（M4 第 8 步）。
+		Save = SavePanel.Attach(_hud, _hud, _hud.SaveButton, Objects, Zones, _board.Theme, Undo);
+
+		// ---- 自动载入上次的存档（用户已拍板的决定 1）----
+		//
+		// 首次运行（没有 last_save.txt，或它指向的存档已被删）才用示例内容 ——
+		// 目标只有一个：关掉再打开，还是那一桌。
+		//
+		// <c>--fresh</c> 强制跳过：自检需要一张确定的开局桌子
+		// （所有断言都建立在示例内容之上），不能因为上次跑留下了一个存档而改变。
+		TryLoadLastSave();
+
 		// 拖拽走"起止"两条边而不是"每一步"：一次手势只产出 1 条历史。
 		// 若每帧记一条，拖一张牌 100 帧就是 100 条，Ctrl+Z 要按 100 次。
 		_viewport.PrimaryDragStarted += _ => Undo.BeginGesture();
 		_viewport.PrimaryReleased += _ => Undo.EndGesture();
 
 		FrameInitialView();
+	}
+
+	/// <summary>
+	/// 启动时读 <c>last_save.txt</c> 并载入那个存档。
+	///
+	/// 失败一律<b>退回示例内容</b>而不是报错退出：这是单人自用的原型工具，
+	/// 一个坏存档不该让人连工具都打不开。失败会吐司说明，用户自己决定怎么办。
+	/// </summary>
+	private void TryLoadLastSave()
+	{
+		if (Dev.CmdLine.HasFlag(FlagFresh))
+			return;
+
+		string last = AppPaths.ReadLastSave();
+		if (string.IsNullOrWhiteSpace(last))
+			return;   // 首次运行
+
+		if (!SaveSystem.Load(last, Objects, Zones, _board.Theme, Undo, out string failure))
+		{
+			_hud.Toast($"读不回上次的存档「{last}」（{failure}），已用示例内容");
+			return;
+		}
+
+		Save.SetCurrent(last);
+		HistoryLog.Clear();
+		_hud.Toast($"已载入「{last}」（{Objects.ObjectCount} 件）");
+	}
+
+	/// <summary>
+	/// <c>Ctrl+S</c> / <c>Ctrl+Shift+S</c>。
+	///
+	/// 与撤销同一套路：走 <c>_UnhandledInput</c>，能到这一层说明 UI 控件没吃掉这个键
+	/// （在输入框里按 Ctrl+S 仍然是控件自己的事）。
+	/// 存档菜单里也有同样的两项，两条路最终都走到 <see cref="SavePanel"/>。
+	/// </summary>
+	public override void _UnhandledKeyInput(InputEvent @event)
+	{
+		if (@event is not InputEventKey key || !key.Pressed || key.Echo)
+			return;
+
+		if (!key.IsActionPressed("tt_save"))
+			return;
+
+		// Ctrl+Shift+S = 另存为
+		if (key.ShiftPressed)
+		{
+			Save.AskSaveAs();
+			GetViewport().SetInputAsHandled();
+			return;
+		}
+
+		Save.SaveNow();
+		GetViewport().SetInputAsHandled();
 	}
 
 	/// <summary>开场把整张桌面装进视野；上限 100%，避免小桌面被拉糊。</summary>

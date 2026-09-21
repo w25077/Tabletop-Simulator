@@ -81,28 +81,45 @@ internal static class DevUndoSim
 	internal static Godot.Collections.Dictionary RestoreAndCompare(
 		ObjectManager objects, ZoneManager zones, SceneSnapshot baseline)
 	{
+		// 先确认"桌子确实被折腾过"，否则下面的比对可能是"什么都没变"而蒙过去。
+		// 这一条归调用方所在的场景，所以留在这一层而不是抽进 CompareAgainst ——
+		// 读档那条路的"折腾"是它自己做的，判据不同。
+		int objectsNow = objects.AllObjects.Count;
+		bool changed = objectsNow != baseline.Count || zones.ZoneCount != baseline.ZoneMembers.Count;
+
+		// 写回
+		baseline.Restore(objects, zones);
+
+		Godot.Collections.Dictionary result = CompareAgainst(objects, zones, baseline, "快照写回");
+		result["setup_something_changed"] = changed;
+		result["objects_before_restore"] = objectsNow;
+		result["objects_in_snapshot"] = baseline.Count;
+
+		// 聚合判定要把这一条也算进去：它是"这次比对有没有意义"的前提
+		result["pass"] = result["pass"].AsBool() && changed;
+		return result;
+	}
+
+	/// <summary>
+	/// 拿"场景现状"与给定快照逐字段比，<b>不写回</b>。
+	///
+	/// 从 <see cref="RestoreAndCompare"/> 里抽出来，因为读档也需要同一套口径：
+	/// 区域成员的"位置/序号/可见性由区域排版决定"这条修正、位置用严格相等、
+	/// 绘制次序单独比 —— 这些若是两份各写一遍，迟早会在某个字段上分叉，
+	/// 而那时候"往返一致"这句话就成了假象。
+	/// </summary>
+	internal static Godot.Collections.Dictionary CompareAgainst(
+		ObjectManager objects, ZoneManager zones, SceneSnapshot baseline, string label)
+	{
 		var r = new Godot.Collections.Dictionary();
 		var c = new Checks(r);
-
-		// 先确认"桌子确实被折腾过"，否则下面的比对可能是"什么都没变"而蒙过去
-		int objectsNow = objects.AllObjects.Count;
-		int objectsBaseline = baseline.Count;
-		int zonesNow = zones.ZoneCount;
-
-		c.Put("setup_something_changed",
-			objectsNow != objectsBaseline || zonesNow != baseline.ZoneMembers.Count);
-
-		r["objects_before_restore"] = objectsNow;
-		r["objects_in_snapshot"] = objectsBaseline;
-
-		// ---- 写回 ----
-		baseline.Restore(objects, zones);
 
 		// ---- 逐字段比对 ----
 		List<ObjectState> now = objects.CaptureAllStates();
 		var mismatches = new Godot.Collections.Array();
 
 		c.Put("object_count_matches", now.Count == baseline.Objects.Count);
+		r["label"] = label;
 		r["objects_after_restore"] = now.Count;
 
 		// 区域成员的"位置/序号/可见性"由<b>区域排版</b>决定，不由物件自己决定

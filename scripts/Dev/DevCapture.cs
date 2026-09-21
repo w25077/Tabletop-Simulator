@@ -260,6 +260,15 @@ public partial class DevCapture : Node
 					GD.Print("[DevCapture] phase: history simulation");
 					report["history_simulation"] = await DevHistorySim.Probe(
 						this, cam, objects, zones, undo, log, vc);
+
+					// 存档（M4 第 7–9 步）排在最后：它会整桌重建若干次，
+					// 放在中间会把后面那些"从当前桌子状态出发"的探针全带偏。
+					if (main is Main saveMain)
+					{
+						GD.Print("[DevCapture] phase: save simulation");
+						report["save_simulation"] = await DevSaveSim.Probe(
+							this, cam, objects, zones, undo, saveMain.Save, saveMain.Board.Theme);
+					}
 				}
 			}
 		}

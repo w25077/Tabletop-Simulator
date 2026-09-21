@@ -47,6 +47,17 @@ internal sealed class SceneSnapshot
 	/// <summary>本次写回删掉了多少个"快照里没有"的物件。写进自检报告供人核对。</summary>
 	internal int LastExtraRemoved { get; private set; }
 
+	/// <summary>
+	/// 上一次写回的区域账本现场（"快照里几张 / 恢复成几张"）。
+	///
+	/// 加它是因为查过一次"成员账本对不上"：物件都正确声明着 ZoneId，
+	/// 区域的成员表却是空的 —— 光看那句报错完全不知道该看哪一层。
+	/// 这一行把"快照里有多少、实际恢复了多少"直接摆出来。
+	/// </summary>
+	internal static string LastRestoreNote { get; private set; } = "";
+
+	private readonly List<string> Diagnostics = new();
+
 	internal int Count => Objects.Count;
 
 	/// <summary>
@@ -248,9 +259,13 @@ internal sealed class SceneSnapshot
 		foreach (Zone zone in zones.AllZones)
 		{
 			zone.Members.Clear();
-			if (ZoneMembers.TryGetValue(zone.Id, out List<string>? uids))
+			string zoneId = zone.Id;
+			bool hasList = ZoneMembers.TryGetValue(zoneId, out List<string>? uids);
+			int wanted = hasList ? uids!.Count : -1;
+
+			if (hasList)
 			{
-				foreach (string uid in uids)
+				foreach (string uid in uids!)
 				{
 					if (byUid.TryGetValue(uid, out TabletopObject? m) &&
 						GodotObject.IsInstanceValid(m))
@@ -271,7 +286,12 @@ internal sealed class SceneSnapshot
 			// 真出现差异就说明"快照里的位置"和"排版算出来的位置"本来就不一致 ——
 			// 那是真 bug，正好该被断言抓住。
 			zone.ApplyLayout();
+			Diagnostics.Add($"{zoneId} 快照={wanted} 恢复={zone.Count} 候选={byUid.Count}");
 		}
+
+		// 写回现场的诊断（只有出问题的那一次会被读）
+		LastRestoreNote = string.Join(" | ", Diagnostics);
+		Diagnostics.Clear();
 
 		// 5. 绘制次序：整体重置成快照里的顺序（谁压谁是状态的一部分）
 		objects.RestoreDrawOrder(ordered);

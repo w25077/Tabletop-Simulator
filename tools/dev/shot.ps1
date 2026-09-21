@@ -103,6 +103,13 @@ if (Test-Path $saveRoot) { Remove-Item $saveRoot -Recurse -Force -ErrorAction Si
 New-Item -ItemType Directory -Force -Path $saveRoot | Out-Null
 $extraArgs += @("--save-root", $saveRoot.Replace('\', '/'))
 
+# --fresh: skip "auto-load the last save" and start from the demo content.
+# Every assertion in the report is written against that known starting table
+# (deck of 20, fixed loose props, eight zone invariants). If a previous run's
+# save were auto-loaded, the whole report would lose its baseline -- and the
+# symptom would look like a dozen unrelated assertions failing at once.
+$extraArgs += @("--fresh")
+
 $prevEap = $ErrorActionPreference
 $ErrorActionPreference = "Continue"
 $raw = & $GodotExe --path $projectDir -- --shot $shotPath --shot-frames $Frames @extraArgs --shot-exit 2>&1 | Out-String

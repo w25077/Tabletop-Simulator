@@ -115,6 +115,7 @@ $saveRoot = Join-Path $devDir "userdata"
 if (Test-Path $saveRoot) { Remove-Item $saveRoot -Recurse -Force -ErrorAction SilentlyContinue }
 New-Item -ItemType Directory -Force -Path $saveRoot | Out-Null
 $godotArgs += @("--save-root", $saveRoot.Replace('\', '/'))
+$godotArgs += @("--fresh")
 
 Write-Host "[run] godot   = $GodotExe"
 Write-Host "[run] shot    = $shotPath"

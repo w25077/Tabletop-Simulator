@@ -52,110 +52,143 @@ public static class DemoContent
 	/// <summary>牌库初始张数。抽牌 / 洗牌的自检都按它推期望值。</summary>
 	public const int DeckSize = 20;
 
+	/// <summary>
+	/// 示例卡牌定义（不含桌面上任何物件）。
+	///
+	/// 抽出来是为了"新建存档"能复用：一个连卡牌定义都没有的空存档让人无从下手，
+	/// 而 M5 的运行时编辑器正是从"有卡可改"开始工作。
+	/// 这份与 <see cref="Populate"/> 用的必须是<b>同一份</b>——
+	/// 两份各自维护的话，演示桌上的卡与新建存档里的卡会慢慢长得不一样。
+	/// </summary>
+	public static List<CardDefinition> CreateDemoCardDefinitions()
+	{
+		return new List<CardDefinition>
+		{
+			new()
+			{
+				Id = "demo.fireball",
+				DisplayName = "火球术",
+				FaceTint = new Color("#5e3a3a"),
+				BorderColor = new Color("#d08770"),
+				Fields =
+				{
+					new CardField { Key = "type", Value = "法术 · 火焰", Slot = FieldSlot.TypeLine },
+					new CardField { Key = "cost", Label = "费用", Value = "3", Slot = FieldSlot.TopRight, ShowLabel = true },
+					new CardField
+					{
+						Key = "effect", Value = "对一个目标造成 6 点伤害。若目标已被点燃，改为 9 点。",
+						Slot = FieldSlot.Description,
+					},
+				},
+			},
+			new()
+			{
+				Id = "demo.goblin",
+				DisplayName = "哥布林斥候",
+				FaceTint = new Color("#3f5240"),
+				BorderColor = new Color("#a3be8c"),
+				Fields =
+				{
+					new CardField { Key = "type", Value = "生物 · 哥布林", Slot = FieldSlot.TypeLine },
+					new CardField { Key = "cost", Value = "1", Slot = FieldSlot.TopLeft },
+					new CardField { Key = "atk", Value = "2", Slot = FieldSlot.BottomLeft },
+					new CardField { Key = "hp", Value = "1", Slot = FieldSlot.BottomRight },
+					new CardField { Key = "rule", Value = "突袭。", Slot = FieldSlot.Description },
+				},
+			},
+			new()
+			{
+				Id = "demo.potion",
+				DisplayName = "治疗药水",
+				FaceTint = new Color("#3a4a5e"),
+				BorderColor = new Color("#81a1c1"),
+				Fields =
+				{
+					new CardField { Key = "type", Value = "物品 · 消耗品", Slot = FieldSlot.TypeLine },
+					new CardField { Key = "cost", Value = "1", Slot = FieldSlot.TopRight },
+					new CardField { Key = "heal", Label = "回复", Value = "5", Slot = FieldSlot.Center, ShowLabel = true },
+					new CardField { Key = "rule", Value = "只能在你的主要阶段使用。", Slot = FieldSlot.Description },
+				},
+			},
+			new()
+			{
+				Id = "demo.dragonkin",
+				DisplayName = "龙裔战士",
+				FaceTint = new Color("#4a3a52"),
+				BorderColor = new Color("#b48ead"),
+				Fields =
+				{
+					new CardField { Key = "type", Value = "生物 · 龙裔", Slot = FieldSlot.TypeLine },
+					new CardField { Key = "cost", Value = "5", Slot = FieldSlot.TopLeft },
+					new CardField { Key = "atk", Value = "5", Slot = FieldSlot.BottomLeft },
+					new CardField { Key = "hp", Value = "7", Slot = FieldSlot.BottomRight },
+					new CardField
+					{
+						Key = "rule", Value = "嘲讽。受到伤害时，若伤害小于 3 则减半（向下取整）。",
+						Slot = FieldSlot.Description,
+					},
+				},
+			},
+
+			// 一张刻意不带任何字段的卡 —— 验证「没定义 Title 时用卡名顶替」这条路
+			new()
+			{
+				Id = "demo.placeholder",
+				DisplayName = "占位卡",
+				FaceTint = new Color("#4c566a"),
+				BorderColor = new Color("#d8dee9"),
+			},
+		};
+	}
+
+	/// <summary>示例 Token 定义（同样抽出来给"新建存档"复用）。</summary>
+	public static List<TokenDefinition> CreateDemoTokenDefinitions()
+	{
+		return new List<TokenDefinition>
+		{
+			new()
+			{
+				Id = "demo.token.damage",
+				DisplayName = "伤害指示物",
+				Shape = TokenShape.Circle,
+				Fill = new Color("#bf616a"),
+				Text = "1",
+				Size = 150f,
+			},
+			new()
+			{
+				Id = "demo.token.shield",
+				DisplayName = "护盾指示物",
+				Shape = TokenShape.Hexagon,
+				Fill = new Color("#5e81ac"),
+				Text = "盾",
+				FontSize = 38,
+				Size = 150f,
+			},
+		};
+	}
+
 	/// <summary>把区域与示例内容铺到桌面上。</summary>
 	public static void Populate(ObjectManager manager, ZoneManager zones, Vector2 boardCenter)
 	{
 		_ = boardCenter;
 
 		// ---- 卡牌与 Token 定义 ----
-		CardDefinition fireball = RegisterCard(manager, new CardDefinition
-		{
-			Id = "demo.fireball",
-			DisplayName = "火球术",
-			FaceTint = new Color("#5e3a3a"),
-			BorderColor = new Color("#d08770"),
-			Fields =
-			{
-				new CardField { Key = "type", Value = "法术 · 火焰", Slot = FieldSlot.TypeLine },
-				new CardField { Key = "cost", Label = "费用", Value = "3", Slot = FieldSlot.TopRight, ShowLabel = true },
-				new CardField
-				{
-					Key = "effect", Value = "对一个目标造成 6 点伤害。若目标已被点燃，改为 9 点。",
-					Slot = FieldSlot.Description,
-				},
-			},
-		});
+		List<CardDefinition> cards = CreateDemoCardDefinitions();
+		foreach (CardDefinition def in cards)
+			manager.CardDefinitions[def.Id] = def;
 
-		CardDefinition goblin = RegisterCard(manager, new CardDefinition
-		{
-			Id = "demo.goblin",
-			DisplayName = "哥布林斥候",
-			FaceTint = new Color("#3f5240"),
-			BorderColor = new Color("#a3be8c"),
-			Fields =
-			{
-				new CardField { Key = "type", Value = "生物 · 哥布林", Slot = FieldSlot.TypeLine },
-				new CardField { Key = "cost", Value = "1", Slot = FieldSlot.TopLeft },
-				new CardField { Key = "atk", Value = "2", Slot = FieldSlot.BottomLeft },
-				new CardField { Key = "hp", Value = "1", Slot = FieldSlot.BottomRight },
-				new CardField { Key = "rule", Value = "突袭。", Slot = FieldSlot.Description },
-			},
-		});
+		List<TokenDefinition> tokens = CreateDemoTokenDefinitions();
+		foreach (TokenDefinition def in tokens)
+			manager.TokenDefinitions[def.Id] = def;
 
-		CardDefinition potion = RegisterCard(manager, new CardDefinition
-		{
-			Id = "demo.potion",
-			DisplayName = "治疗药水",
-			FaceTint = new Color("#3a4a5e"),
-			BorderColor = new Color("#81a1c1"),
-			Fields =
-			{
-				new CardField { Key = "type", Value = "物品 · 消耗品", Slot = FieldSlot.TypeLine },
-				new CardField { Key = "cost", Value = "1", Slot = FieldSlot.TopRight },
-				new CardField { Key = "heal", Label = "回复", Value = "5", Slot = FieldSlot.Center, ShowLabel = true },
-				new CardField { Key = "rule", Value = "只能在你的主要阶段使用。", Slot = FieldSlot.Description },
-			},
-		});
-
-		CardDefinition dragon = RegisterCard(manager, new CardDefinition
-		{
-			Id = "demo.dragonkin",
-			DisplayName = "龙裔战士",
-			FaceTint = new Color("#4a3a52"),
-			BorderColor = new Color("#b48ead"),
-			Fields =
-			{
-				new CardField { Key = "type", Value = "生物 · 龙裔", Slot = FieldSlot.TypeLine },
-				new CardField { Key = "cost", Value = "5", Slot = FieldSlot.TopLeft },
-				new CardField { Key = "atk", Value = "5", Slot = FieldSlot.BottomLeft },
-				new CardField { Key = "hp", Value = "7", Slot = FieldSlot.BottomRight },
-				new CardField
-				{
-					Key = "rule", Value = "嘲讽。受到伤害时，若伤害小于 3 则减半（向下取整）。",
-					Slot = FieldSlot.Description,
-				},
-			},
-		});
-
-		// 一张刻意不带任何字段的卡 —— 验证「没定义 Title 时用卡名顶替」这条路
-		CardDefinition placeholder = RegisterCard(manager, new CardDefinition
-		{
-			Id = "demo.placeholder",
-			DisplayName = "占位卡",
-			FaceTint = new Color("#4c566a"),
-			BorderColor = new Color("#d8dee9"),
-		});
-
-		TokenDefinition damage = RegisterToken(manager, new TokenDefinition
-		{
-			Id = "demo.token.damage",
-			DisplayName = "伤害指示物",
-			Shape = TokenShape.Circle,
-			Fill = new Color("#bf616a"),
-			Text = "1",
-			Size = 150f,
-		});
-
-		TokenDefinition shield = RegisterToken(manager, new TokenDefinition
-		{
-			Id = "demo.token.shield",
-			DisplayName = "护盾指示物",
-			Shape = TokenShape.Hexagon,
-			Fill = new Color("#5e81ac"),
-			Text = "盾",
-			FontSize = 38,
-			Size = 150f,
-		});
+		CardDefinition fireball = cards[0];
+		CardDefinition goblin = cards[1];
+		CardDefinition potion = cards[2];
+		CardDefinition dragon = cards[3];
+		CardDefinition placeholder = cards[4];
+		TokenDefinition damage = tokens[0];
+		TokenDefinition shield = tokens[1];
 
 		// ---- 区域 ----
 		BuildZones(zones);
@@ -275,16 +308,4 @@ public static class DemoContent
 	}
 
 	// ------------------------------------------------------------------ 注册
-
-	private static CardDefinition RegisterCard(ObjectManager manager, CardDefinition def)
-	{
-		manager.CardDefinitions[def.Id] = def;
-		return def;
-	}
-
-	private static TokenDefinition RegisterToken(ObjectManager manager, TokenDefinition def)
-	{
-		manager.TokenDefinitions[def.Id] = def;
-		return def;
-	}
 }
