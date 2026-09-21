@@ -119,9 +119,9 @@ public partial class ZoneManager : Node2D, IZoneInteraction
 		_objects = objects;
 		_hud = hud;
 
-		_menu = new PopupMenu { Name = "ZoneMenu" };
+		// 【项目约定】右键菜单在 Main.tscn 里搭好（挂在 HudRoot 下），这里只取来接线。
+		_menu = hudLayer.GetNode<PopupMenu>("HudRoot/ZoneMenu");
 		_menu.IdPressed += OnMenuItemPressed;
-		hudLayer.AddChild(_menu);
 	}
 
 	/// <summary>加一块区域。返回建好的节点。</summary>

@@ -207,9 +207,9 @@ public partial class ObjectManager : Node2D, IWorldPicker, IWheelHandler
 		viewport.PrimaryDoubleClicked += OnPrimaryDoubleClicked;
 		viewport.PointerMoved += OnPointerMoved;
 
-		_menu = new PopupMenu { Name = "ObjectMenu" };
+		// 【项目约定】右键菜单在 Main.tscn 里搭好（挂在 HudRoot 下），这里只取来接线。
+		_menu = hudLayer.GetNode<PopupMenu>("HudRoot/ObjectMenu");
 		_menu.IdPressed += OnMenuItemPressed;
-		hudLayer.AddChild(_menu);
 	}
 
 	// ------------------------------------------------------------------ 创建

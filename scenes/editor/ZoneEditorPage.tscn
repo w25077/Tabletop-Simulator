@@ -1,0 +1,233 @@
+[gd_scene format=3 uid="uid://djgu156vlftu7"]
+
+[ext_resource type="Script" uid="uid://cff4rn7t81k43" path="res://scripts/Core/Editor/ZoneEditorPage.cs" id="1_zone"]
+
+[node name="PageZones" type="Control"]
+layout_mode = 3
+anchors_preset = 15
+anchor_right = 1.0
+anchor_bottom = 1.0
+grow_horizontal = 2
+grow_vertical = 2
+mouse_filter = 1
+script = ExtResource("1_zone")
+
+[node name="Row" type="HBoxContainer" parent="."]
+layout_mode = 1
+anchors_preset = 15
+anchor_right = 1.0
+anchor_bottom = 1.0
+grow_horizontal = 2
+grow_vertical = 2
+theme_override_constants/separation = 10
+
+[node name="Left" type="VBoxContainer" parent="Row"]
+custom_minimum_size = Vector2(240, 0)
+layout_mode = 2
+theme_override_constants/separation = 6
+
+[node name="Title" type="Label" parent="Row/Left"]
+layout_mode = 2
+text = "桌上的区域"
+
+[node name="ListScroll" type="ScrollContainer" parent="Row/Left"]
+layout_mode = 2
+size_flags_vertical = 3
+horizontal_scroll_mode = 0
+
+[node name="ZonePicker" type="OptionButton" parent="Row/Left/ListScroll"]
+layout_mode = 2
+size_flags_horizontal = 3
+
+[node name="KindRow" type="HBoxContainer" parent="Row/Left"]
+layout_mode = 2
+theme_override_constants/separation = 6
+
+[node name="KindLabel" type="Label" parent="Row/Left/KindRow"]
+layout_mode = 2
+text = "画："
+
+[node name="DrawKindPicker" type="OptionButton" parent="Row/Left/KindRow"]
+layout_mode = 2
+size_flags_horizontal = 3
+
+[node name="DrawButton" type="Button" parent="Row/Left"]
+layout_mode = 2
+toggle_mode = true
+text = "在画布上拖矩形"
+
+[node name="DrawHint" type="Label" parent="Row/Left"]
+layout_mode = 2
+text = "打开模式后在桌面上按下并拖动。"
+autowrap_mode = 3
+
+[node name="DeleteButton" type="Button" parent="Row/Left"]
+layout_mode = 2
+text = "删除这块区域"
+
+[node name="Right" type="VBoxContainer" parent="Row"]
+layout_mode = 2
+size_flags_horizontal = 3
+theme_override_constants/separation = 6
+
+[node name="Summary" type="Label" parent="Row/Right"]
+layout_mode = 2
+
+[node name="FormScroll" type="ScrollContainer" parent="Row/Right"]
+layout_mode = 2
+size_flags_vertical = 3
+horizontal_scroll_mode = 0
+
+[node name="Form" type="VBoxContainer" parent="Row/Right/FormScroll"]
+layout_mode = 2
+size_flags_horizontal = 3
+theme_override_constants/separation = 6
+
+[node name="NameRow" type="HBoxContainer" parent="Row/Right/FormScroll/Form"]
+layout_mode = 2
+theme_override_constants/separation = 6
+
+[node name="NameLabel" type="Label" parent="Row/Right/FormScroll/Form/NameRow"]
+layout_mode = 2
+text = "名称："
+
+[node name="Name" type="LineEdit" parent="Row/Right/FormScroll/Form/NameRow"]
+custom_minimum_size = Vector2(200, 0)
+layout_mode = 2
+size_flags_horizontal = 3
+
+[node name="KindPickRow" type="HBoxContainer" parent="Row/Right/FormScroll/Form"]
+layout_mode = 2
+theme_override_constants/separation = 6
+
+[node name="KindPickLabel" type="Label" parent="Row/Right/FormScroll/Form/KindPickRow"]
+layout_mode = 2
+text = "类型："
+
+[node name="Kind" type="OptionButton" parent="Row/Right/FormScroll/Form/KindPickRow"]
+custom_minimum_size = Vector2(200, 0)
+layout_mode = 2
+size_flags_horizontal = 3
+
+[node name="RectRow" type="HBoxContainer" parent="Row/Right/FormScroll/Form"]
+layout_mode = 2
+theme_override_constants/separation = 6
+
+[node name="RectLabel" type="Label" parent="Row/Right/FormScroll/Form/RectRow"]
+layout_mode = 2
+text = "矩形 x/y/宽/高："
+
+[node name="RectX" type="LineEdit" parent="Row/Right/FormScroll/Form/RectRow"]
+custom_minimum_size = Vector2(70, 0)
+layout_mode = 2
+
+[node name="RectY" type="LineEdit" parent="Row/Right/FormScroll/Form/RectRow"]
+custom_minimum_size = Vector2(70, 0)
+layout_mode = 2
+
+[node name="RectW" type="LineEdit" parent="Row/Right/FormScroll/Form/RectRow"]
+custom_minimum_size = Vector2(70, 0)
+layout_mode = 2
+
+[node name="RectH" type="LineEdit" parent="Row/Right/FormScroll/Form/RectRow"]
+custom_minimum_size = Vector2(70, 0)
+layout_mode = 2
+
+[node name="ApplyRectButton" type="Button" parent="Row/Right/FormScroll/Form/RectRow"]
+layout_mode = 2
+text = "应用"
+
+[node name="SortRow" type="HBoxContainer" parent="Row/Right/FormScroll/Form"]
+layout_mode = 2
+theme_override_constants/separation = 6
+
+[node name="SortLabel" type="Label" parent="Row/Right/FormScroll/Form/SortRow"]
+layout_mode = 2
+text = "排版："
+
+[node name="SortMode" type="OptionButton" parent="Row/Right/FormScroll/Form/SortRow"]
+custom_minimum_size = Vector2(200, 0)
+layout_mode = 2
+size_flags_horizontal = 3
+
+[node name="FaceRow" type="HBoxContainer" parent="Row/Right/FormScroll/Form"]
+layout_mode = 2
+theme_override_constants/separation = 6
+
+[node name="FaceLabel" type="Label" parent="Row/Right/FormScroll/Form/FaceRow"]
+layout_mode = 2
+text = "进区朝向："
+
+[node name="FaceOnEnter" type="OptionButton" parent="Row/Right/FormScroll/Form/FaceRow"]
+custom_minimum_size = Vector2(200, 0)
+layout_mode = 2
+size_flags_horizontal = 3
+
+[node name="SnapOnDrop" type="CheckBox" parent="Row/Right/FormScroll/Form"]
+layout_mode = 2
+text = "拖入后归位到区域排出来的位置"
+
+[node name="MaxRow" type="HBoxContainer" parent="Row/Right/FormScroll/Form"]
+layout_mode = 2
+theme_override_constants/separation = 6
+
+[node name="MaxLabel" type="Label" parent="Row/Right/FormScroll/Form/MaxRow"]
+layout_mode = 2
+text = "容量上限（0 = 无限）："
+
+[node name="MaxCards" type="SpinBox" parent="Row/Right/FormScroll/Form/MaxRow"]
+custom_minimum_size = Vector2(90, 0)
+layout_mode = 2
+max_value = 999.0
+step = 1.0
+
+[node name="DrawOnDoubleClick" type="CheckBox" parent="Row/Right/FormScroll/Form"]
+layout_mode = 2
+text = "双击抽牌"
+
+[node name="DrawRow" type="HBoxContainer" parent="Row/Right/FormScroll/Form"]
+layout_mode = 2
+theme_override_constants/separation = 6
+
+[node name="DrawTargetLabel" type="Label" parent="Row/Right/FormScroll/Form/DrawRow"]
+layout_mode = 2
+text = "抽到哪："
+
+[node name="DrawTargetPicker" type="OptionButton" parent="Row/Right/FormScroll/Form/DrawRow"]
+custom_minimum_size = Vector2(200, 0)
+layout_mode = 2
+
+[node name="DrawCountLabel" type="Label" parent="Row/Right/FormScroll/Form/DrawRow"]
+layout_mode = 2
+text = "一次抽："
+
+[node name="DrawCount" type="SpinBox" parent="Row/Right/FormScroll/Form/DrawRow"]
+custom_minimum_size = Vector2(80, 0)
+layout_mode = 2
+min_value = 1.0
+max_value = 20.0
+step = 1.0
+
+[node name="Enabled" type="CheckBox" parent="Row/Right/FormScroll/Form"]
+layout_mode = 2
+text = "启用（关掉 = 锁定，不收拖入也不抽牌）"
+
+[node name="ColorRow" type="HBoxContainer" parent="Row/Right/FormScroll/Form"]
+layout_mode = 2
+theme_override_constants/separation = 6
+
+[node name="TintLabel" type="Label" parent="Row/Right/FormScroll/Form/ColorRow"]
+layout_mode = 2
+text = "底色："
+
+[node name="Tint" type="ColorPickerButton" parent="Row/Right/FormScroll/Form/ColorRow"]
+custom_minimum_size = Vector2(110, 26)
+layout_mode = 2
+
+[node name="BorderLabel" type="Label" parent="Row/Right/FormScroll/Form/ColorRow"]
+layout_mode = 2
+text = "边框："
+
+[node name="Border" type="ColorPickerButton" parent="Row/Right/FormScroll/Form/ColorRow"]
+custom_minimum_size = Vector2(110, 26)
+layout_mode = 2

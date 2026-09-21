@@ -30,83 +30,33 @@ public partial class DeckEditorPage : EditorPage
 			? deck
 			: null;
 
-	protected override void BuildContent()
+	/// <summary>
+	/// 取场景里的控件并接线（【项目约定】禁止动态生成节点）。
+	///
+	/// 控件树在 <c>scenes/editor/DeckEditorPage.tscn</c> 里。
+	///
+	/// <b>行仍然是运行期建的</b>（<see cref="RefreshRows"/>）：一副牌有哪几种卡、
+	/// 各几张是运行期数据，属于"按数据生成"，与"结构上固定的控件"不同。
+	/// 发牌目标下拉的项也是运行期填的（区域随时会加/删）。
+	/// </summary>
+	internal override void Initialize()
 	{
-		var column = new VBoxContainer();
-		column.AddThemeConstantOverride("separation", 8);
-		column.SetAnchorsPreset(LayoutPreset.FullRect);
-		AddChild(column);
+		_deckPicker = GetNode<OptionButton>("Column/Top/DeckPicker");
+		_summary = GetNode<Label>("Column/Summary");
+		_rows = GetNode<VBoxContainer>("Column/Scroll/DeckRows");
+		_cardPicker = GetNode<OptionButton>("Column/AddRow/CardPicker");
 
-		var top = new HBoxContainer();
-		top.AddThemeConstantOverride("separation", 8);
-		column.AddChild(top);
-
-		top.AddChild(new Label { Text = "卡组：" });
-		_deckPicker = new OptionButton { CustomMinimumSize = new Vector2(220f, 0f) };
 		_deckPicker.ItemSelected += OnDeckPicked;
-		top.AddChild(_deckPicker);
+		GetNode<Button>("Column/Top/NewDeckButton").Pressed += OnNewDeckPressed;
+		GetNode<Button>("Column/Top/DeleteDeckButton").Pressed += OnDeleteDeckPressed;
+		GetNode<Button>("Column/AddRow/AddButton").Pressed += OnAddPressed;
+		GetNode<Button>("Column/Actions/DealButton").Pressed += OnDealPressed;
+		GetNode<Button>("Column/Actions/ScatterButton").Pressed += OnScatterPressed;
 
-		var newDeck = new Button { Text = "新建卡组" };
-		newDeck.Pressed += OnNewDeckPressed;
-		top.AddChild(newDeck);
-
-		var deleteDeck = new Button { Text = "删除卡组" };
-		deleteDeck.Pressed += OnDeleteDeckPressed;
-		top.AddChild(deleteDeck);
-
-		_summary = new Label { Text = "" };
-		column.AddChild(_summary);
-
-		var scroll = new ScrollContainer
-		{
-			SizeFlagsVertical = SizeFlags.ExpandFill,
-			HorizontalScrollMode = ScrollContainer.ScrollMode.Disabled,
-		};
-		column.AddChild(scroll);
-
-		_rows = new VBoxContainer { Name = "DeckRows", SizeFlagsHorizontal = SizeFlags.ExpandFill };
-		_rows.AddThemeConstantOverride("separation", 4);
-		scroll.AddChild(_rows);
-
-		var addRow = new HBoxContainer();
-		addRow.AddThemeConstantOverride("separation", 8);
-		column.AddChild(addRow);
-
-		addRow.AddChild(new Label { Text = "加一张：" });
-		_cardPicker = new OptionButton { SizeFlagsHorizontal = SizeFlags.ExpandFill };
-		addRow.AddChild(_cardPicker);
-
-		var add = new Button { Text = "加入卡组" };
-		add.Pressed += OnAddPressed;
-		addRow.AddChild(add);
-
-		var actions = new HBoxContainer();
-		actions.AddThemeConstantOverride("separation", 8);
-		column.AddChild(actions);
-
-		actions.AddChild(new Label { Text = "发到：" });
-		OptionButton target = BuildTargetPicker();
-		actions.AddChild(target);
-
-		var deal = new Button { Text = "按这副牌发一副" };
-		deal.Pressed += OnDealPressed;
-		actions.AddChild(deal);
-
-		var toTable = new Button { Text = "散着放到桌面" };
-		toTable.Pressed += OnScatterPressed;
-		actions.AddChild(toTable);
-	}
-
-	private OptionButton BuildTargetPicker()
-	{
-		var picker = new OptionButton { Name = "TargetZonePicker", CustomMinimumSize = new Vector2(220f, 0f) };
-		picker.AddItem("桌面中心（散件）", 0);
-		picker.SetItemMetadata(0, "");
-		picker.ItemSelected += idx =>
-		{
-			TargetZoneId = picker.GetItemMetadata((int)idx).AsString();
-		};
-		return picker;
+		OptionButton target = GetNode<OptionButton>("Column/Actions/TargetZonePicker");
+		target.AddItem("桌面中心（散件）", 0);
+		target.SetItemMetadata(0, "");
+		target.ItemSelected += idx => TargetZoneId = target.GetItemMetadata((int)idx).AsString();
 	}
 
 	public override void OnShown()

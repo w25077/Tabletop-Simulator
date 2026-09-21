@@ -56,16 +56,27 @@ internal static class DevReport
 		report["hud_controls"] = ControlProbe(main, new[]
 		{
 			"HUD/HudRoot/Layout/TopBar",
+
+			// 这四个状态标签在 M5.5 P1 之后<b>已经不在场景里了</b> —— 它们搬到了
+			// 代码建的 InfoBar 里，合成一行文字（见 Hud.BuildInfoBar）。
+			// 报告里留着它们的"位置"会永远显示 found=false，看起来像坏了。
+			"HUD/HudRoot/Layout/InfoBar/InfoLabel",
+			"HUD/HudRoot/Layout/HintBar/HintLabel",
+
+			// 存档名的头衔：那个从 M1 起就被按钮盖住、也从来没人调过 setter 的标签，
+			// 保留成隐藏锚点（"存档名只有一个真相"这件事的证据仍然留着）。
 			"HUD/HudRoot/Layout/TopBar/TopRow/SaveNameLabel",
-			"HUD/HudRoot/Layout/TopBar/TopRow/ZoomLabel",
-			"HUD/HudRoot/Layout/TopBar/TopRow/ObjectLabel",
-			"HUD/HudRoot/Layout/TopBar/TopRow/SelectionLabel",
+
+			// 顶栏现在只剩按钮
 			"HUD/HudRoot/Layout/TopBar/TopRow/GridSnapButton",
 			"HUD/HudRoot/Layout/TopBar/TopRow/FitButton",
 			"HUD/HudRoot/Layout/TopBar/TopRow/Zoom100Button",
-			"HUD/HudRoot/Layout/HintBar/HintLabel",
+			"HUD/HudRoot/SaveButton",
+			"HUD/HudRoot/EditorButton",
 			"HUD/HudRoot/Layout/ToastLabel",
 		});
+
+		report["hud_layout"] = HudLayoutProbe(main);
 
 		report["regions"] = RegionProbe(frame, vpSize);
 		report["objects"] = ObjectProbe(main);
@@ -818,6 +829,183 @@ internal static class DevReport
 
 		return d;
 	}
+
+	/// <summary>
+	/// 顶部按钮与底部两条栏的几何（M5.5 P1 的第二轮反馈）。
+	///
+	/// <b>为什么这一节必须存在：</b>用户报的是"左上角的两个按钮挡住了顶部的信息文本展示"。
+	/// 而那种 bug <b>穿得过当时全部的几何判据</b> ——
+	/// 按钮的位置对、宽度对、在视口内；标签的位置对、宽度对、在视口内；
+	/// 两条都是 <c>visible = true</c>。<b>坏掉的只有"它们互相压住"这一件事，
+	/// 而那件事没有任何断言在看。</b>
+	/// 这与 M4 那条「一个 0 高度的面板能穿过位置 / 宽度 / Visible 全部判据」是同一类：
+	/// <b>判定的覆盖面 = 我想到要问的问题的覆盖面。</b>
+	///
+	/// 所以这里直接问三个互相压不压的问题：按钮与顶栏、按钮与信息栏、
+	/// 信息栏与提示栏；外加一条"两条栏同高"。
+	/// </summary>
+	private static Godot.Collections.Dictionary HudLayoutProbe(Node main)
+	{
+		var d = new Godot.Collections.Dictionary();
+
+		if (main.GetNodeOrNull("HUD") is not CanvasLayer hudLayer ||
+			hudLayer.GetNodeOrNull("HudRoot/Layout") is not Control layout)
+		{
+			d["skipped"] = "找不到 HUD 的 Layout";
+			return d;
+		}
+
+		if (layout.GetParent() is not Control)
+		{
+			d["skipped"] = "HudRoot 不是 Control";
+			return d;
+		}
+
+		Control? topBar = layout.GetNodeOrNull<Control>("TopBar");
+		Control? infoBar = layout.GetNodeOrNull<Control>("InfoBar");
+		Control? hintBar = layout.GetNodeOrNull<Control>("HintBar");
+
+		if (topBar is null || infoBar is null || hintBar is null)
+		{
+			d["skipped"] = "三条栏没齐（TopBar / InfoBar / HintBar 缺一）";
+			return d;
+		}
+
+		Rect2 topRect = topBar.GetGlobalRect();
+		Rect2 infoRect = infoBar.GetGlobalRect();
+		Rect2 hintRect = hintBar.GetGlobalRect();
+
+		int c = 0;
+		bool ok = true;
+
+		void Check(string key, bool value)
+		{
+			d[key] = value;
+			c++;
+			ok &= value;
+		}
+
+		d["top_bar_rect"] = RectArray(topRect);
+		d["info_bar_rect"] = RectArray(infoRect);
+		d["hint_bar_rect"] = RectArray(hintRect);
+
+		// 1) 右上角那三个按钮要在顶栏里（用户报的是"按钮压住文字"，
+		//    所以先钉住"按钮确实在顶栏这一条带子里"）。
+		foreach (string name in new[] { "GridSnapButton", "FitButton", "Zoom100Button" })
+		{
+			Control? b = topBar.GetNodeOrNull<Control>($"TopRow/{name}");
+			if (b is null)
+			{
+				Check($"top_button_{name}_inside_top_bar", false);
+				continue;
+			}
+
+			Rect2 r = b.GetGlobalRect();
+			d[$"top_button_{name}_rect"] = RectArray(r);
+			Check($"top_button_{name}_inside_top_bar",
+				r.Position.Y >= topRect.Position.Y && r.End.Y <= topRect.End.Y);
+		}
+
+		// 2) 顶栏左侧那两个按钮（存档 / 编辑器）在<b>顶栏这条带子里</b>。
+		//
+		//    判据刻意<b>不是</b> "r.End.Y &lt; 42"（写死像素）：按钮的真实高度由主题给，
+		//    实测 29 而不是我原先写死的 28 —— 于是顶栏跟着长到 43，
+		//    而"写死 42"这条判据会把它判红。<b>拿被测对象自己的框去比</b>，
+		//    数字就不会随主题漂移而撒谎。
+		foreach (string name in new[] { "SaveButton", "EditorButton" })
+		{
+			Control? b = topBar.GetNodeOrNull<Control>($"TopRow/{name}");
+			if (b is null)
+			{
+				Check($"top_button_{name}_inside_top_bar", false);
+				continue;
+			}
+
+			Rect2 r = b.GetGlobalRect();
+			d[$"top_button_{name}_rect"] = RectArray(r);
+			Check($"top_button_{name}_inside_top_bar",
+				r.Position.Y >= topRect.Position.Y && r.End.Y <= topRect.End.Y + 0.5f);
+			Check($"top_button_{name}_stays_in_top_band", r.End.Y < infoRect.Position.Y);
+		}
+
+		// 3) 信息栏在提示栏正上方、**不重叠**。
+		Check("info_bar_above_hint_bar", infoRect.End.Y <= hintRect.Position.Y);
+		Check("info_bar_no_vertical_overlap", infoRect.Intersection(hintRect).Size.Y <= 0.5f);
+
+		// 4) 两栏同高 —— 用户明确要求的那一条。
+		//    它不是自动成立的：两条栏内容不同、各自最小高度就不同。
+		d["info_bar_height"] = infoRect.Size.Y;
+		d["hint_bar_height"] = hintRect.Size.Y;
+		Check("bottom_bars_same_height", Mathf.Abs(infoRect.Size.Y - hintRect.Size.Y) <= 0.5f);
+
+		// 5) 两条栏都要真的在视口里、而且有可见像素那样的尺寸
+		//    （"0 高度面板"那类问题的第一道防线）。
+		Vector2 vp = main.GetViewport().GetVisibleRect().Size;
+		Check("info_bar_nonzero", infoRect.Size.X > 100f && infoRect.Size.Y > 8f);
+		Check("info_bar_inside_viewport", infoRect.End.Y <= vp.Y + 1f);
+		Check("hint_bar_inside_viewport", hintRect.End.Y <= vp.Y + 1f);
+
+		// 6) 信息栏那一行里有内容。
+		//    空串也能穿过"矩形非零"—— 所以这里问"里面有什么"。
+		//
+		// 前三段是固定标签（存档 / 缩放 / 物件 / 选中）；区域那一段是
+		// <c>ZoneManager</c> 推过来的**区域名 + 张数**（形如"牌库 20 · 弃牌堆 0"），
+		// 里面并没有"区域"这两个字 —— 第一版就是照字面去查"区域"，红了而产品是对的。
+		// 所以第五段只要求"文字明显比前四段长"，不要求具体字样。
+		Label? info = infoBar.GetNodeOrNull<Label>("InfoLabel");
+		string text = info?.Text ?? "";
+		d["info_text"] = text;
+		Check("info_text_has_all_labels",
+			text.Contains("存档") && text.Contains("缩放") &&
+			text.Contains("物件") && text.Contains("选中"));
+
+		string afterSelection = text[(text.IndexOf("选中", System.StringComparison.Ordinal) + 2)..];
+		d["info_text_zone_part"] = afterSelection;
+		Check("info_text_has_zone_summary", afterSelection.Length > 6);
+
+		// 7) 两条栏里**真的画了东西**。
+		//
+		// 与 M4 那条"面板矩形量对、Visible 为真，都还可能是'一块和桌面同色的空板'"同一个理由：
+		// 矩形对了不代表字画出来了。数颜色是最省事的那把尺 —— 纯色衬底只有 1~2 种颜色，
+		// 而一行中文字（带抗锯齿）有几十种。
+		if (hudLayer.GetViewport()?.GetTexture()?.GetImage() is { } frame)
+		{
+			int infoColors = CountDistinctColors(frame, infoRect);
+			int hintColors = CountDistinctColors(frame, hintRect);
+			d["info_bar_colors"] = infoColors;
+			d["hint_bar_colors"] = hintColors;
+			Check("info_bar_has_content", infoColors >= 8);
+			Check("hint_bar_has_content", hintColors >= 8);
+		}
+
+		d["assertion_count"] = c;
+		d["pass"] = ok;
+		return d;
+	}
+
+	/// <summary>一个屏幕矩形里有多少种不同的颜色（隔 2 像素取样，避开抗锯齿噪声）。</summary>
+	private static int CountDistinctColors(Image image, Rect2 rect)
+	{
+		var seen = new System.Collections.Generic.HashSet<uint>();
+
+		int x0 = Mathf.Max(Mathf.FloorToInt(rect.Position.X), 0);
+		int y0 = Mathf.Max(Mathf.FloorToInt(rect.Position.Y), 0);
+		int x1 = Mathf.Min(Mathf.CeilToInt(rect.End.X), image.GetWidth());
+		int y1 = Mathf.Min(Mathf.CeilToInt(rect.End.Y), image.GetHeight());
+
+		for (int y = y0; y < y1; y += 2)
+		{
+			for (int x = x0; x < x1; x += 2)
+				seen.Add(image.GetPixel(x, y).ToRgba32());
+		}
+
+		return seen.Count;
+	}
+
+	private static Godot.Collections.Array RectArray(Rect2 r) => new()
+	{
+		r.Position.X, r.Position.Y, r.Size.X, r.Size.Y,
+	};
 
 	private static Godot.Collections.Dictionary ControlProbe(Node main, string[] paths)
 	{

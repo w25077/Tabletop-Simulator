@@ -1,0 +1,231 @@
+[gd_scene load_steps=3 format=3 uid="uid://bsyvdl6466r7a"]
+
+[ext_resource type="Script" uid="uid://dnq4rktgc2760" path="res://scripts/Core/Editor/TokenEditorPage.cs" id="1_token"]
+[ext_resource type="Script" uid="uid://wqt0h01sjk0s" path="res://scripts/Core/Editor/TokenPreview.cs" id="2_preview"]
+
+[node name="PageTokens" type="Control"]
+layout_mode = 3
+anchors_preset = 15
+anchor_right = 1.0
+anchor_bottom = 1.0
+grow_horizontal = 2
+grow_vertical = 2
+mouse_filter = 1
+script = ExtResource("1_token")
+
+[node name="Row" type="HBoxContainer" parent="."]
+layout_mode = 1
+anchors_preset = 15
+anchor_right = 1.0
+anchor_bottom = 1.0
+grow_horizontal = 2
+grow_vertical = 2
+theme_override_constants/separation = 10
+
+[node name="Left" type="VBoxContainer" parent="Row"]
+custom_minimum_size = Vector2(260, 0)
+layout_mode = 2
+theme_override_constants/separation = 6
+
+[node name="Title" type="Label" parent="Row/Left"]
+layout_mode = 2
+text = "指示物"
+
+[node name="ListScroll" type="ScrollContainer" parent="Row/Left"]
+layout_mode = 2
+size_flags_vertical = 3
+horizontal_scroll_mode = 0
+
+[node name="TokenList" type="VBoxContainer" parent="Row/Left/ListScroll"]
+layout_mode = 2
+size_flags_horizontal = 3
+theme_override_constants/separation = 2
+
+[node name="NewTokenButton" type="Button" parent="Row/Left"]
+layout_mode = 2
+text = "新建指示物"
+
+[node name="DuplicateTokenButton" type="Button" parent="Row/Left"]
+layout_mode = 2
+text = "复制这个"
+
+[node name="SpawnButton" type="Button" parent="Row/Left"]
+layout_mode = 2
+text = "放到桌面（视口中心）"
+
+[node name="DeleteTokenButton" type="Button" parent="Row/Left"]
+layout_mode = 2
+text = "删除这个指示物"
+
+[node name="Right" type="VBoxContainer" parent="Row"]
+layout_mode = 2
+size_flags_horizontal = 3
+theme_override_constants/separation = 6
+
+[node name="Summary" type="Label" parent="Row/Right"]
+layout_mode = 2
+
+[node name="Preview" type="Control" parent="Row/Right"]
+custom_minimum_size = Vector2(520, 170)
+layout_mode = 2
+script = ExtResource("2_preview")
+
+[node name="FormScroll" type="ScrollContainer" parent="Row/Right"]
+layout_mode = 2
+size_flags_vertical = 3
+horizontal_scroll_mode = 0
+
+[node name="Form" type="VBoxContainer" parent="Row/Right/FormScroll"]
+layout_mode = 2
+size_flags_horizontal = 3
+theme_override_constants/separation = 6
+
+[node name="NameRow" type="HBoxContainer" parent="Row/Right/FormScroll/Form"]
+layout_mode = 2
+theme_override_constants/separation = 6
+
+[node name="NameLabel" type="Label" parent="Row/Right/FormScroll/Form/NameRow"]
+layout_mode = 2
+text = "名称："
+
+[node name="Name" type="LineEdit" parent="Row/Right/FormScroll/Form/NameRow"]
+custom_minimum_size = Vector2(200, 0)
+layout_mode = 2
+size_flags_horizontal = 3
+
+[node name="ShapeRow" type="HBoxContainer" parent="Row/Right/FormScroll/Form"]
+layout_mode = 2
+theme_override_constants/separation = 6
+
+[node name="ShapeLabel" type="Label" parent="Row/Right/FormScroll/Form/ShapeRow"]
+layout_mode = 2
+text = "形状："
+
+[node name="Shape" type="OptionButton" parent="Row/Right/FormScroll/Form/ShapeRow"]
+custom_minimum_size = Vector2(180, 0)
+layout_mode = 2
+
+[node name="SizeRow" type="HBoxContainer" parent="Row/Right/FormScroll/Form"]
+layout_mode = 2
+theme_override_constants/separation = 6
+
+[node name="SizeLabel" type="Label" parent="Row/Right/FormScroll/Form/SizeRow"]
+layout_mode = 2
+text = "尺寸："
+
+[node name="Size" type="SpinBox" parent="Row/Right/FormScroll/Form/SizeRow"]
+custom_minimum_size = Vector2(110, 0)
+layout_mode = 2
+min_value = 20.0
+max_value = 600.0
+step = 10.0
+
+[node name="BorderWidthRow" type="HBoxContainer" parent="Row/Right/FormScroll/Form"]
+layout_mode = 2
+theme_override_constants/separation = 6
+
+[node name="BorderWidthLabel" type="Label" parent="Row/Right/FormScroll/Form/BorderWidthRow"]
+layout_mode = 2
+text = "边框宽："
+
+[node name="BorderWidth" type="SpinBox" parent="Row/Right/FormScroll/Form/BorderWidthRow"]
+custom_minimum_size = Vector2(110, 0)
+layout_mode = 2
+max_value = 40.0
+step = 1.0
+
+[node name="ColorRow" type="HBoxContainer" parent="Row/Right/FormScroll/Form"]
+layout_mode = 2
+theme_override_constants/separation = 8
+
+[node name="FillLabel" type="Label" parent="Row/Right/FormScroll/Form/ColorRow"]
+layout_mode = 2
+text = "填充："
+
+[node name="Fill" type="ColorPickerButton" parent="Row/Right/FormScroll/Form/ColorRow"]
+custom_minimum_size = Vector2(110, 26)
+layout_mode = 2
+
+[node name="BorderLabel" type="Label" parent="Row/Right/FormScroll/Form/ColorRow"]
+layout_mode = 2
+text = "边框："
+
+[node name="Border" type="ColorPickerButton" parent="Row/Right/FormScroll/Form/ColorRow"]
+custom_minimum_size = Vector2(110, 26)
+layout_mode = 2
+
+[node name="TextRow" type="HBoxContainer" parent="Row/Right/FormScroll/Form"]
+layout_mode = 2
+theme_override_constants/separation = 6
+
+[node name="TextLabel" type="Label" parent="Row/Right/FormScroll/Form/TextRow"]
+layout_mode = 2
+text = "文字："
+
+[node name="Text" type="LineEdit" parent="Row/Right/FormScroll/Form/TextRow"]
+custom_minimum_size = Vector2(200, 0)
+layout_mode = 2
+size_flags_horizontal = 3
+
+[node name="FontSizeRow" type="HBoxContainer" parent="Row/Right/FormScroll/Form"]
+layout_mode = 2
+theme_override_constants/separation = 6
+
+[node name="FontSizeLabel" type="Label" parent="Row/Right/FormScroll/Form/FontSizeRow"]
+layout_mode = 2
+text = "字号："
+
+[node name="FontSize" type="SpinBox" parent="Row/Right/FormScroll/Form/FontSizeRow"]
+custom_minimum_size = Vector2(110, 0)
+layout_mode = 2
+min_value = 8.0
+max_value = 200.0
+step = 1.0
+
+[node name="TextOffsetYRow" type="HBoxContainer" parent="Row/Right/FormScroll/Form"]
+layout_mode = 2
+theme_override_constants/separation = 6
+
+[node name="TextOffsetYLabel" type="Label" parent="Row/Right/FormScroll/Form/TextOffsetYRow"]
+layout_mode = 2
+text = "文字下移："
+
+[node name="TextOffsetY" type="SpinBox" parent="Row/Right/FormScroll/Form/TextOffsetYRow"]
+custom_minimum_size = Vector2(110, 0)
+layout_mode = 2
+min_value = -200.0
+max_value = 200.0
+step = 1.0
+
+[node name="TextColorRow" type="HBoxContainer" parent="Row/Right/FormScroll/Form"]
+layout_mode = 2
+theme_override_constants/separation = 8
+
+[node name="TextColorLabel" type="Label" parent="Row/Right/FormScroll/Form/TextColorRow"]
+layout_mode = 2
+text = "文字色："
+
+[node name="TextColor" type="ColorPickerButton" parent="Row/Right/FormScroll/Form/TextColorRow"]
+custom_minimum_size = Vector2(110, 26)
+layout_mode = 2
+
+[node name="ImageRow" type="HBoxContainer" parent="Row/Right/FormScroll/Form"]
+layout_mode = 2
+theme_override_constants/separation = 8
+
+[node name="ImageLabel" type="Label" parent="Row/Right/FormScroll/Form/ImageRow"]
+layout_mode = 2
+text = "中心图："
+
+[node name="TokenImagePicker" type="OptionButton" parent="Row/Right/FormScroll/Form/ImageRow"]
+custom_minimum_size = Vector2(260, 0)
+layout_mode = 2
+
+[node name="RescanButton" type="Button" parent="Row/Right/FormScroll/Form/ImageRow"]
+layout_mode = 2
+text = "重新扫描图片"
+
+[node name="ImageHint" type="Label" parent="Row/Right/FormScroll/Form"]
+layout_mode = 2
+text = "图片从「卡牌」页导入 —— 一个存档共用一套 images/。"
+autowrap_mode = 3

@@ -16,8 +16,9 @@ namespace TabletopSimulator.Core;
 ///   症状是"面板显示 12 条、实际 13 条"。</item>
 /// <item><b>点击 = 时间旅行</b>（用户已拍板）。所以游标之后的行显示为"可重做"并变暗，
 ///   而不是不可点 —— 点它等于走回去。</item>
-/// <item><b>节点在代码里建</b>，不进 <c>Main.tscn</c>。少一处要手工同步的场景文件，
-///   也就少一次"编辑器把内存里的旧场景写回去"的机会（M3 在这上面栽过一次）。</item>
+/// <item><b>面板的骨架写在 <c>Main.tscn</c> 里</b>（【项目约定】禁止动态生成节点）。
+///   只有**行**是运行期建的 —— 那是"按数据生成"（历史有几条是运行期才知道的），
+///   不属于禁止之列。</item>
 /// </list>
 /// </summary>
 [GlobalClass]
@@ -50,83 +51,45 @@ public partial class LogPanel : Control
 	private readonly List<int> _rowIndices = new();
 
 	/// <summary>
-	/// 建面板并挂到 <paramref name="layer"/> 上。
+	/// 把场景里那个日志面板接上依赖并返回它。
 	///
-	/// 挂 <c>HudRoot</c> 之下：它是全屏 <c>Control</c>，面板要贴右边缘，
-	/// 需要它的矩形当参照。挂 CanvasLayer 本身上没有可用的尺寸。
+	/// 【项目约定】禁止动态生成节点 —— 面板骨架（Bg / Column / Title / Scroll / Rows /
+	/// CopyButton）与它的锚点都在 <c>Main.tscn</c> 里搭好，
+	/// 挂在 <c>HudRoot</c> 下（要拿它的矩形当参照才能贴右边缘）。
+	///
+	/// <b>依赖仍然由这里注入、而不是让面板自己去 <c>GetNode</c> 找</b>：
+	/// <c>UndoSystem</c> 与 <c>Hud</c> 是同级节点、由 <c>Main</c> 装配，
+	/// 面板去猜路径只会多一处会漂移的耦合。
 	/// </summary>
 	public static LogPanel Attach(CanvasLayer layer, UndoSystem undo, Hud hud)
 	{
-		LogPanel panel = new() { Name = "LogPanel" };
-
-		// 依赖先塞进字段，UI 在 _Ready 里建。
-		//
-		// <b>顺序是有讲究的</b>：锚点的解析发生在节点<b>进树之后</b>的布局计算里。
-		// 第一版在 AddChild 之前就把 anchors/offsets 设好了，结果面板的矩形高度
-		// 一直是 0（宽度却是对的）—— 因为那时它还没有父级矩形可参照，
-		// 而 SetAnchorsPreset 会把 offsets 归零后，之后再改 anchor 也不会重算。
-		// 症状很隐蔽：逻辑上"面板打开了"、`Visible` 为真、样式也对，
-		// 只是它在屏幕上只有 0 像素高。
+		LogPanel panel = layer.GetNode<LogPanel>("HudRoot/LogPanel");
 		panel._undo = undo;
 		panel._hud = hud;
-
-		layer.AddChild(panel);
 		return panel;
 	}
 
-	public override void _Ready()
+	/// <summary>
+	/// 装配完成之后调一次：取场景里的控件、接上信号、刷一次列表。
+	///
+	/// <b>不能放在 <c>_Ready</c> 里</b>：面板现在活在 <c>Main.tscn</c> 里，
+	/// 它的 <c>_Ready</c> 跑在 <c>Main._Ready</c> <b>之前</b>，
+	/// 那会儿 <c>_undo</c> 还是 null（Godot 是子节点先 <c>_Ready</c>）。
+	/// </summary>
+	public void Initialize()
 	{
-		Build();
+		_title = GetNode<Label>("Bg/Column/Title");
+		_rows = GetNode<VBoxContainer>("Bg/Column/Scroll/Rows");
+		_copyButton = GetNode<Button>("Bg/Column/CopyButton");
+
+		_copyButton.Pressed += OnCopyPressed;
+
 		_undo.HistoryChanged += OnHistoryChanged;
 		Refresh();
 	}
 
-	private void Build()
+	public override void _Ready()
 	{
-		// 手动锚点而不是 anchor_preset：面板要"顶栏下沿 → 底部提示条上沿"，
-		// 而预设里没有这一档（M1 已经在贴底那件事上栽过一次）。
-		SetAnchorsPreset(LayoutPreset.TopLeft);
-		AnchorLeft = 1f;
-		AnchorRight = 1f;
-		AnchorTop = 0f;
-		AnchorBottom = 1f;
-		OffsetLeft = -PanelWidth - 8f;
-		OffsetRight = -8f;
-		OffsetTop = 50f;
-		OffsetBottom = -34f;
-
-		MouseFilter = MouseFilterEnum.Stop;
-		Visible = false;
-
-		var bg = new PanelContainer();
-		bg.SetAnchorsPreset(LayoutPreset.FullRect);
-		AddChild(bg);
-
-		var column = new VBoxContainer();
-		column.AddThemeConstantOverride("separation", 6);
-		bg.AddChild(column);
-
-		_title = new Label { Text = "操作日志" };
-		column.AddChild(_title);
-
-		var scroll = new ScrollContainer
-		{
-			SizeFlagsVertical = SizeFlags.ExpandFill,
-			HorizontalScrollMode = ScrollContainer.ScrollMode.Disabled,
-		};
-		column.AddChild(scroll);
-
-		_rows = new VBoxContainer
-		{
-			Name = "Rows",
-			SizeFlagsHorizontal = SizeFlags.ExpandFill,
-		};
-		_rows.AddThemeConstantOverride("separation", 2);
-		scroll.AddChild(_rows);
-
-		_copyButton = new Button { Text = "复制全部" };
-		_copyButton.Pressed += OnCopyPressed;
-		column.AddChild(_copyButton);
 	}
 
 	/// <summary>

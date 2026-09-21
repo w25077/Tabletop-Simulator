@@ -100,203 +100,86 @@ public partial class TokenEditorPage : EditorPage
 	/// <summary>直接调一次列表刷新（自检要能证明"重建列表会弄掉焦点"）。</summary>
 	internal void RefreshListForTest() => RefreshList();
 
-	protected override void BuildContent()
+	/// <summary>
+	/// 取场景里的控件并接线（【项目约定】禁止动态生成节点）。
+	///
+	/// 控件树在 <c>scenes/editor/TokenEditorPage.tscn</c> 里，
+	/// <c>Preview</c> 那个节点挂的是 <see cref="TokenPreview"/> 脚本
+	/// —— 它也是场景的一部分，不再在代码里 new。
+	///
+	/// 两处"枚举下拉"的项仍然在这里填：项**随枚举走**（<c>TokenShape</c> 加一档，
+	/// 下拉要跟着多一项），写进场景的话两者会不一致。
+	/// 这是"结构在场景、内容按数据填"的分界。
+	/// </summary>
+	internal override void Initialize()
 	{
-		var row = new HBoxContainer();
-		row.AddThemeConstantOverride("separation", 10);
-		row.SetAnchorsPreset(LayoutPreset.FullRect);
-		AddChild(row);
+		_list = GetNode<VBoxContainer>("Row/Left/ListScroll/TokenList");
+		_duplicateButton = GetNode<Button>("Row/Left/DuplicateTokenButton");
+		_deleteButton = GetNode<Button>("Row/Left/DeleteTokenButton");
+		_summary = GetNode<Label>("Row/Right/Summary");
+		_preview = GetNode<TokenPreview>("Row/Right/Preview");
 
-		// ---- 左：列表 + 动作 ----
-		var left = new VBoxContainer { CustomMinimumSize = new Vector2(260f, 0f) };
-		left.AddThemeConstantOverride("separation", 6);
-		row.AddChild(left);
+		_name = GetNode<LineEdit>("Row/Right/FormScroll/Form/NameRow/Name");
+		_shape = GetNode<OptionButton>("Row/Right/FormScroll/Form/ShapeRow/Shape");
+		_size = GetNode<SpinBox>("Row/Right/FormScroll/Form/SizeRow/Size");
+		_borderWidth = GetNode<SpinBox>("Row/Right/FormScroll/Form/BorderWidthRow/BorderWidth");
+		_fill = GetNode<ColorPickerButton>("Row/Right/FormScroll/Form/ColorRow/Fill");
+		_border = GetNode<ColorPickerButton>("Row/Right/FormScroll/Form/ColorRow/Border");
+		_text = GetNode<LineEdit>("Row/Right/FormScroll/Form/TextRow/Text");
+		_fontSize = GetNode<SpinBox>("Row/Right/FormScroll/Form/FontSizeRow/FontSize");
+		_textOffsetY = GetNode<SpinBox>("Row/Right/FormScroll/Form/TextOffsetYRow/TextOffsetY");
+		_textColor = GetNode<ColorPickerButton>("Row/Right/FormScroll/Form/TextColorRow/TextColor");
+		_imagePicker = GetNode<OptionButton>("Row/Right/FormScroll/Form/ImageRow/TokenImagePicker");
 
-		left.AddChild(new Label { Text = "指示物" });
-
-		var scroll = new ScrollContainer
+		foreach (TokenShape shape in System.Enum.GetValues<TokenShape>())
 		{
-			SizeFlagsVertical = SizeFlags.ExpandFill,
-			HorizontalScrollMode = ScrollContainer.ScrollMode.Disabled,
-		};
-		left.AddChild(scroll);
+			_shape.AddItem(ShapeName(shape));
+			_shape.SetItemMetadata(_shape.ItemCount - 1, (int)shape);
+		}
 
-		_list = new VBoxContainer { Name = "TokenList", SizeFlagsHorizontal = SizeFlags.ExpandFill };
-		_list.AddThemeConstantOverride("separation", 2);
-		scroll.AddChild(_list);
-
-		var newButton = new Button { Text = "新建指示物", Name = "NewTokenButton" };
-		newButton.Pressed += OnNewPressed;
-		left.AddChild(newButton);
-
-		// 「复制这张」在 M5.5 第 2 条补上：卡牌页与指示物页现在是同一套动作，
-		// 用户在这一页学到的操作在那一页直接能用（反过来也一样）。
-		_duplicateButton = new Button { Text = "复制这个", Name = "DuplicateTokenButton" };
-		_duplicateButton.Pressed += OnDuplicatePressed;
-		left.AddChild(_duplicateButton);
-
-		var spawn = new Button { Text = "放到桌面（视口中心）" };
-		spawn.Pressed += OnSpawnPressed;
-		left.AddChild(spawn);
-
-		var delete = new Button { Text = "删除这个指示物", Name = "DeleteTokenButton" };
-		delete.Pressed += OnDeletePressed;
-		_deleteButton = delete;
-		left.AddChild(delete);
-
-		// ---- 右：预览 + 属性 ----
-		var right = new VBoxContainer { SizeFlagsHorizontal = SizeFlags.ExpandFill };
-		right.AddThemeConstantOverride("separation", 6);
-		row.AddChild(right);
-
-		_summary = new Label { Text = "" };
-		right.AddChild(_summary);
-
-		_preview = new TokenPreview
-		{
-			Name = "Preview",
-
-			// 宽度显式给：在 VBox 里只给垂直尺寸的话宽度会拿到 0，
-			// 而零尺寸的控件<b>根本不会被绘制</b>（卡面预览就栽在这上面）。
-			CustomMinimumSize = new Vector2(520f, 170f),
-		};
-		right.AddChild(_preview);
-
-		var formScroll = new ScrollContainer
-		{
-			SizeFlagsVertical = SizeFlags.ExpandFill,
-			HorizontalScrollMode = ScrollContainer.ScrollMode.Disabled,
-		};
-		right.AddChild(formScroll);
-
-		var form = new VBoxContainer { SizeFlagsHorizontal = SizeFlags.ExpandFill };
-		form.AddThemeConstantOverride("separation", 6);
-		formScroll.AddChild(form);
-
-		_name = AddText(form, "名称", t =>
+		// 名称 / 文字两行是"提交才算数"（TextSubmitted + FocusExited），
+		// 与用户在这两个框里按回车或点走是同一条路。
+		SubscribeText(_name, t =>
 		{
 			string trimmed = t.Trim();
 			if (trimmed.Length > 0)
 				Mutate(d => d.DisplayName = trimmed);
 		});
 
-		_shape = AddOption(form, "形状", System.Enum.GetValues<TokenShape>(), shape =>
-			Mutate(d => d.Shape = shape));
+		SubscribeText(_text, t => Mutate(d => d.Text = t));
 
-		_size = AddSpin(form, "尺寸", 20, 600, 10, v => Mutate(d => d.Size = (float)v));
-		_borderWidth = AddSpin(form, "边框宽", 0, 40, 1, v => Mutate(d => d.BorderWidth = (float)v));
-
-		var colorRow = new HBoxContainer();
-		colorRow.AddThemeConstantOverride("separation", 8);
-		form.AddChild(colorRow);
-
-		colorRow.AddChild(new Label { Text = "填充：" });
-		_fill = new ColorPickerButton { CustomMinimumSize = new Vector2(110f, 26f) };
+		_shape.ItemSelected += idx => Mutate(d => d.Shape = (TokenShape)_shape.GetItemMetadata((int)idx).AsInt32());
+		_size.ValueChanged += v => Mutate(d => d.Size = (float)v);
+		_borderWidth.ValueChanged += v => Mutate(d => d.BorderWidth = (float)v);
 		_fill.ColorChanged += c => Mutate(d => d.Fill = c);
-		colorRow.AddChild(_fill);
-
-		colorRow.AddChild(new Label { Text = "边框：" });
-		_border = new ColorPickerButton { CustomMinimumSize = new Vector2(110f, 26f) };
 		_border.ColorChanged += c => Mutate(d => d.Border = c);
-		colorRow.AddChild(_border);
-
-		_text = AddText(form, "文字", t => Mutate(d => d.Text = t));
-		_fontSize = AddSpin(form, "字号", 8, 200, 1, v => Mutate(d => d.FontSize = (int)v));
-		_textOffsetY = AddSpin(form, "文字下移", -200, 200, 1, v => Mutate(d => d.TextOffsetY = (float)v));
-
-		var textColorRow = new HBoxContainer();
-		textColorRow.AddThemeConstantOverride("separation", 8);
-		form.AddChild(textColorRow);
-		textColorRow.AddChild(new Label { Text = "文字色：" });
-		_textColor = new ColorPickerButton { CustomMinimumSize = new Vector2(110f, 26f) };
+		_fontSize.ValueChanged += v => Mutate(d => d.FontSize = (int)v);
+		_textOffsetY.ValueChanged += v => Mutate(d => d.TextOffsetY = (float)v);
 		_textColor.ColorChanged += c => Mutate(d => d.TextColor = c);
-		textColorRow.AddChild(_textColor);
-
-		var imageRow = new HBoxContainer();
-		imageRow.AddThemeConstantOverride("separation", 8);
-		form.AddChild(imageRow);
-		imageRow.AddChild(new Label { Text = "中心图：" });
-		_imagePicker = new OptionButton { Name = "TokenImagePicker", CustomMinimumSize = new Vector2(260f, 0f) };
 		_imagePicker.ItemSelected += idx =>
 			Mutate(d => d.Image = _imagePicker.GetItemMetadata((int)idx).AsString());
-		imageRow.AddChild(_imagePicker);
 
-		var rescan = new Button { Text = "重新扫描图片" };
-		rescan.Pressed += RefreshImageList;
-		imageRow.AddChild(rescan);
-
-		form.AddChild(new Label
-		{
-			Text = "图片从「卡牌」页导入 —— 一个存档共用一套 images/。",
-			AutowrapMode = TextServer.AutowrapMode.WordSmart,
-		});
+		GetNode<Button>("Row/Left/NewTokenButton").Pressed += OnNewPressed;
+		_duplicateButton.Pressed += OnDuplicatePressed;
+		GetNode<Button>("Row/Left/SpawnButton").Pressed += OnSpawnPressed;
+		_deleteButton.Pressed += OnDeletePressed;
+		GetNode<Button>("Row/Right/FormScroll/Form/ImageRow/RescanButton").Pressed += RefreshImageList;
 	}
 
-	// ------------------------------------------------------------------ 小控件
-
-	private LineEdit AddText(Control parent, string label, System.Action<string> onSubmit)
+	/// <summary>把一个"提交才算数"的输入框接上回调（回车 / 失焦两条都算提交）。</summary>
+	private static void SubscribeText(LineEdit edit, System.Action<string> onSubmit)
 	{
-		var row = new HBoxContainer();
-		row.AddThemeConstantOverride("separation", 6);
-		parent.AddChild(row);
-		row.AddChild(new Label { Text = $"{label}：" });
-
-		var edit = new LineEdit { SizeFlagsHorizontal = SizeFlags.ExpandFill, CustomMinimumSize = new Vector2(200f, 0f) };
 		edit.TextSubmitted += t => onSubmit(t);
 		edit.FocusExited += () => onSubmit(edit.Text);
-		row.AddChild(edit);
-		return edit;
 	}
 
-	private SpinBox AddSpin(
-		Control parent, string label, double min, double max, double step, System.Action<double> onChanged)
-	{
-		var row = new HBoxContainer();
-		row.AddThemeConstantOverride("separation", 6);
-		parent.AddChild(row);
-		row.AddChild(new Label { Text = $"{label}：" });
-
-		var spin = new SpinBox
-		{
-			MinValue = min,
-			MaxValue = max,
-			Step = step,
-			CustomMinimumSize = new Vector2(110f, 0f),
-		};
-
-		spin.ValueChanged += v => onChanged(v);
-		row.AddChild(spin);
-		return spin;
-	}
-
-	private OptionButton AddOption<T>(
-		Control parent, string label, T[] values, System.Action<T> onPicked)
-		where T : struct, System.Enum
-	{
-		var row = new HBoxContainer();
-		row.AddThemeConstantOverride("separation", 6);
-		parent.AddChild(row);
-		row.AddChild(new Label { Text = $"{label}：" });
-
-		var picker = new OptionButton { CustomMinimumSize = new Vector2(180f, 0f) };
-		for (int i = 0; i < values.Length; i++)
-		{
-			picker.AddItem(ShapeName(values[i]));
-			picker.SetItemMetadata(picker.ItemCount - 1, System.Convert.ToInt32(values[i]));
-		}
-
-		picker.ItemSelected += idx => onPicked(values[(int)idx]);
-		row.AddChild(picker);
-		return picker;
-	}
-
-	private static string ShapeName<T>(T value) where T : struct, System.Enum => value switch
+	private static string ShapeName(TokenShape shape) => shape switch
 	{
 		TokenShape.Circle => "圆形",
 		TokenShape.Square => "方形",
 		TokenShape.Hexagon => "六边形",
 		TokenShape.Triangle => "三角形",
-		_ => value.ToString(),
+		_ => shape.ToString(),
 	};
 
 	// ------------------------------------------------------------------ 刷新

@@ -1,0 +1,331 @@
+[gd_scene load_steps=3 format=3 uid="uid://dtg5ksjrw24yq"]
+
+[ext_resource type="Script" uid="uid://cg2b4meqswwnd" path="res://scripts/Core/Editor/CardEditorPage.cs" id="1_card"]
+[ext_resource type="Script" uid="uid://c4vfdoqdce16p" path="res://scripts/Core/Editor/CardPreview.cs" id="2_preview"]
+
+[node name="PageCards" type="Control"]
+layout_mode = 3
+anchors_preset = 15
+anchor_right = 1.0
+anchor_bottom = 1.0
+grow_horizontal = 2
+grow_vertical = 2
+mouse_filter = 1
+script = ExtResource("1_card")
+
+[node name="Row" type="HBoxContainer" parent="."]
+layout_mode = 1
+anchors_preset = 15
+anchor_right = 1.0
+anchor_bottom = 1.0
+grow_horizontal = 2
+grow_vertical = 2
+theme_override_constants/separation = 10
+
+[node name="Left" type="VBoxContainer" parent="Row"]
+custom_minimum_size = Vector2(260, 0)
+layout_mode = 2
+theme_override_constants/separation = 6
+
+[node name="Title" type="Label" parent="Row/Left"]
+layout_mode = 2
+text = "卡池"
+
+[node name="CardActions" type="HBoxContainer" parent="Row/Left"]
+layout_mode = 2
+theme_override_constants/separation = 4
+
+[node name="NewCardButton" type="Button" parent="Row/Left/CardActions"]
+layout_mode = 2
+text = "新建卡牌"
+
+[node name="DuplicateCardButton" type="Button" parent="Row/Left/CardActions"]
+layout_mode = 2
+text = "复制这张"
+
+[node name="DeleteCardButton" type="Button" parent="Row/Left/CardActions"]
+layout_mode = 2
+text = "删除这张"
+
+[node name="ListScroll" type="ScrollContainer" parent="Row/Left"]
+layout_mode = 2
+size_flags_vertical = 3
+horizontal_scroll_mode = 0
+
+[node name="CardList" type="VBoxContainer" parent="Row/Left/ListScroll"]
+layout_mode = 2
+size_flags_horizontal = 3
+theme_override_constants/separation = 2
+
+[node name="Right" type="VBoxContainer" parent="Row"]
+layout_mode = 2
+size_flags_horizontal = 3
+theme_override_constants/separation = 6
+
+[node name="Preview" type="Control" parent="Row/Right"]
+custom_minimum_size = Vector2(420, 260)
+layout_mode = 2
+script = ExtResource("2_preview")
+
+[node name="FormScroll" type="ScrollContainer" parent="Row/Right"]
+layout_mode = 2
+size_flags_vertical = 3
+horizontal_scroll_mode = 0
+
+[node name="CardForm" type="VBoxContainer" parent="Row/Right/FormScroll"]
+layout_mode = 2
+size_flags_horizontal = 3
+theme_override_constants/separation = 8
+
+[node name="BasicHeader" type="Label" parent="Row/Right/FormScroll/CardForm"]
+layout_mode = 2
+text = "── 基本 ──"
+
+[node name="NameRow" type="HBoxContainer" parent="Row/Right/FormScroll/CardForm"]
+layout_mode = 2
+theme_override_constants/separation = 8
+
+[node name="NameLabel" type="Label" parent="Row/Right/FormScroll/CardForm/NameRow"]
+layout_mode = 2
+text = "名称："
+
+[node name="NameEdit" type="LineEdit" parent="Row/Right/FormScroll/CardForm/NameRow"]
+custom_minimum_size = Vector2(200, 0)
+layout_mode = 2
+size_flags_horizontal = 3
+
+[node name="FaceImageRow" type="HBoxContainer" parent="Row/Right/FormScroll/CardForm"]
+layout_mode = 2
+theme_override_constants/separation = 8
+
+[node name="FaceImageLabel" type="Label" parent="Row/Right/FormScroll/CardForm/FaceImageRow"]
+layout_mode = 2
+text = "底图："
+
+[node name="FaceImage" type="OptionButton" parent="Row/Right/FormScroll/CardForm/FaceImageRow"]
+custom_minimum_size = Vector2(260, 0)
+layout_mode = 2
+size_flags_horizontal = 3
+
+[node name="BackImageRow" type="HBoxContainer" parent="Row/Right/FormScroll/CardForm"]
+layout_mode = 2
+theme_override_constants/separation = 8
+
+[node name="BackImageLabel" type="Label" parent="Row/Right/FormScroll/CardForm/BackImageRow"]
+layout_mode = 2
+text = "卡背："
+
+[node name="BackImage" type="OptionButton" parent="Row/Right/FormScroll/CardForm/BackImageRow"]
+custom_minimum_size = Vector2(260, 0)
+layout_mode = 2
+size_flags_horizontal = 3
+
+[node name="ImportRow" type="HBoxContainer" parent="Row/Right/FormScroll/CardForm"]
+layout_mode = 2
+theme_override_constants/separation = 8
+
+[node name="ImportButton" type="Button" parent="Row/Right/FormScroll/CardForm/ImportRow"]
+layout_mode = 2
+text = "导入图片…"
+
+[node name="ImportHint" type="Label" parent="Row/Right/FormScroll/CardForm/ImportRow"]
+layout_mode = 2
+
+[node name="ColorRow" type="HBoxContainer" parent="Row/Right/FormScroll/CardForm"]
+layout_mode = 2
+theme_override_constants/separation = 8
+
+[node name="FaceTintLabel" type="Label" parent="Row/Right/FormScroll/CardForm/ColorRow"]
+layout_mode = 2
+text = "底色："
+
+[node name="FaceTint" type="ColorPickerButton" parent="Row/Right/FormScroll/CardForm/ColorRow"]
+custom_minimum_size = Vector2(110, 26)
+layout_mode = 2
+
+[node name="BackTintLabel" type="Label" parent="Row/Right/FormScroll/CardForm/ColorRow"]
+layout_mode = 2
+text = "卡背色："
+
+[node name="BackTint" type="ColorPickerButton" parent="Row/Right/FormScroll/CardForm/ColorRow"]
+custom_minimum_size = Vector2(110, 26)
+layout_mode = 2
+
+[node name="BorderColorLabel" type="Label" parent="Row/Right/FormScroll/CardForm/ColorRow"]
+layout_mode = 2
+text = "边框："
+
+[node name="BorderColor" type="ColorPickerButton" parent="Row/Right/FormScroll/CardForm/ColorRow"]
+custom_minimum_size = Vector2(110, 26)
+layout_mode = 2
+
+[node name="FieldsHeader" type="HBoxContainer" parent="Row/Right/FormScroll/CardForm"]
+layout_mode = 2
+theme_override_constants/separation = 8
+
+[node name="FieldsTitle" type="Label" parent="Row/Right/FormScroll/CardForm/FieldsHeader"]
+layout_mode = 2
+text = "── 卡面字段 ──"
+
+[node name="AddFieldButton" type="Button" parent="Row/Right/FormScroll/CardForm/FieldsHeader"]
+layout_mode = 2
+text = "加一个字段"
+
+[node name="FieldHint" type="Label" parent="Row/Right/FormScroll/CardForm/FieldsHeader"]
+layout_mode = 2
+
+[node name="FieldRows" type="VBoxContainer" parent="Row/Right/FormScroll/CardForm"]
+layout_mode = 2
+size_flags_horizontal = 3
+theme_override_constants/separation = 4
+
+[node name="TemplateHeader" type="Label" parent="Row/Right/FormScroll/CardForm"]
+layout_mode = 2
+text = "── 版式（这套参数可以整副牌共用）──"
+
+[node name="Row1" type="HBoxContainer" parent="Row/Right/FormScroll/CardForm"]
+layout_mode = 2
+theme_override_constants/separation = 8
+
+[node name="TitleFontSizeLabel" type="Label" parent="Row/Right/FormScroll/CardForm/Row1"]
+layout_mode = 2
+text = "卡名字号："
+
+[node name="TitleFontSize" type="SpinBox" parent="Row/Right/FormScroll/CardForm/Row1"]
+custom_minimum_size = Vector2(70, 0)
+layout_mode = 2
+min_value = 8.0
+max_value = 120.0
+value = 34.0
+
+[node name="FieldFontSizeLabel" type="Label" parent="Row/Right/FormScroll/CardForm/Row1"]
+layout_mode = 2
+text = "字段字号："
+
+[node name="FieldFontSize" type="SpinBox" parent="Row/Right/FormScroll/CardForm/Row1"]
+custom_minimum_size = Vector2(70, 0)
+layout_mode = 2
+min_value = 8.0
+max_value = 120.0
+value = 26.0
+
+[node name="DescriptionFontSizeLabel" type="Label" parent="Row/Right/FormScroll/CardForm/Row1"]
+layout_mode = 2
+text = "描述字号："
+
+[node name="DescriptionFontSize" type="SpinBox" parent="Row/Right/FormScroll/CardForm/Row1"]
+custom_minimum_size = Vector2(70, 0)
+layout_mode = 2
+min_value = 8.0
+max_value = 120.0
+value = 20.0
+
+[node name="Row2" type="HBoxContainer" parent="Row/Right/FormScroll/CardForm"]
+layout_mode = 2
+theme_override_constants/separation = 8
+
+[node name="PaddingLabel" type="Label" parent="Row/Right/FormScroll/CardForm/Row2"]
+layout_mode = 2
+text = "内边距："
+
+[node name="Padding" type="SpinBox" parent="Row/Right/FormScroll/CardForm/Row2"]
+custom_minimum_size = Vector2(80, 0)
+layout_mode = 2
+max_value = 0.25
+step = 0.01
+value = 0.06
+
+[node name="CornerRadiusLabel" type="Label" parent="Row/Right/FormScroll/CardForm/Row2"]
+layout_mode = 2
+text = "圆角："
+
+[node name="CornerRadius" type="SpinBox" parent="Row/Right/FormScroll/CardForm/Row2"]
+custom_minimum_size = Vector2(70, 0)
+layout_mode = 2
+max_value = 80.0
+value = 14.0
+
+[node name="TemplateBorderLabel" type="Label" parent="Row/Right/FormScroll/CardForm/Row2"]
+layout_mode = 2
+text = "边框宽："
+
+[node name="TemplateBorder" type="SpinBox" parent="Row/Right/FormScroll/CardForm/Row2"]
+custom_minimum_size = Vector2(70, 0)
+layout_mode = 2
+max_value = 20.0
+value = 3.0
+
+[node name="Row3" type="HBoxContainer" parent="Row/Right/FormScroll/CardForm"]
+layout_mode = 2
+theme_override_constants/separation = 8
+
+[node name="ShadowSizeLabel" type="Label" parent="Row/Right/FormScroll/CardForm/Row3"]
+layout_mode = 2
+text = "投影大小："
+
+[node name="ShadowSize" type="SpinBox" parent="Row/Right/FormScroll/CardForm/Row3"]
+custom_minimum_size = Vector2(70, 0)
+layout_mode = 2
+max_value = 40.0
+value = 6.0
+
+[node name="ShadowXLabel" type="Label" parent="Row/Right/FormScroll/CardForm/Row3"]
+layout_mode = 2
+text = "投影偏移 X："
+
+[node name="ShadowX" type="SpinBox" parent="Row/Right/FormScroll/CardForm/Row3"]
+custom_minimum_size = Vector2(70, 0)
+layout_mode = 2
+min_value = -30.0
+max_value = 30.0
+
+[node name="ShadowYLabel" type="Label" parent="Row/Right/FormScroll/CardForm/Row3"]
+layout_mode = 2
+text = "Y："
+
+[node name="ShadowY" type="SpinBox" parent="Row/Right/FormScroll/CardForm/Row3"]
+custom_minimum_size = Vector2(70, 0)
+layout_mode = 2
+min_value = -30.0
+max_value = 30.0
+value = 5.0
+
+[node name="TemplateColorRow" type="HBoxContainer" parent="Row/Right/FormScroll/CardForm"]
+layout_mode = 2
+theme_override_constants/separation = 8
+
+[node name="TitleColorLabel" type="Label" parent="Row/Right/FormScroll/CardForm/TemplateColorRow"]
+layout_mode = 2
+text = "卡名色："
+
+[node name="TitleColor" type="ColorPickerButton" parent="Row/Right/FormScroll/CardForm/TemplateColorRow"]
+custom_minimum_size = Vector2(110, 26)
+layout_mode = 2
+
+[node name="FieldColorLabel" type="Label" parent="Row/Right/FormScroll/CardForm/TemplateColorRow"]
+layout_mode = 2
+text = "字段色："
+
+[node name="FieldColor" type="ColorPickerButton" parent="Row/Right/FormScroll/CardForm/TemplateColorRow"]
+custom_minimum_size = Vector2(110, 26)
+layout_mode = 2
+
+[node name="DescriptionColorLabel" type="Label" parent="Row/Right/FormScroll/CardForm/TemplateColorRow"]
+layout_mode = 2
+text = "描述色："
+
+[node name="DescriptionColor" type="ColorPickerButton" parent="Row/Right/FormScroll/CardForm/TemplateColorRow"]
+custom_minimum_size = Vector2(110, 26)
+layout_mode = 2
+
+[node name="Row4" type="HBoxContainer" parent="Row/Right/FormScroll/CardForm"]
+layout_mode = 2
+theme_override_constants/separation = 8
+
+[node name="UseNameAsTitle" type="CheckBox" parent="Row/Right/FormScroll/CardForm/Row4"]
+layout_mode = 2
+text = "没写「卡名」字段时用卡名顶替"
+
+[node name="ResetTemplateButton" type="Button" parent="Row/Right/FormScroll/CardForm/Row4"]
+layout_mode = 2
+text = "版式恢复默认"

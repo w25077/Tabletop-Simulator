@@ -145,11 +145,40 @@ internal static class DevEditorSim
 		c.Put("editor_rect_inside_viewport",
 			rect.Position.X >= 0f && rect.Position.Y >= 0f &&
 			rect.End.X <= viewport.X + 1f && rect.End.Y <= viewport.Y + 1f);
-		c.Put("editor_leaves_top_bar_visible", rect.Position.Y >= 42f);
+		// 面板必须<b>整个让开顶栏</b> —— 而不是"让开 42 像素"。
+		//
+		// 第一版写死的是 `rect.Position.Y >= 42f`，而那个 42 是当时<b>目测</b>的顶栏高度。
+		// 现在顶栏的高度由场景里那些控件的主题最小尺寸决定（实测 43），
+		// 于是"42"这条判据随时会因为主题或按钮尺寸的变化而变成假绿/假红。
+		// 拿顶栏自己的框去比，数字就不会撒谎。
+		Rect2 topBar = hud.TopBarRectForTest;
+		r["hud_top_bar_rect"] = RectArray(topBar);
+		c.Put("editor_leaves_top_bar_visible", rect.Position.Y >= topBar.End.Y);
 		c.Put("editor_blocks_mouse", editor.MouseFilter == Control.MouseFilterEnum.Stop);
 
 		// 五个分页真的都在（不是"我建了五个对象但只挂上去四个"）
 		c.Put("has_all_pages", TabCount(editor) == EditorPanel.TabZones + 1);
+
+		// 五个分页<b>是场景实例</b>，不是在代码里 new 出来挂上去的。
+		//
+		// 判据：<c>Owner</c>。由 <c>new</c> 出来再 <c>AddChild</c> 的节点，
+		// Owner 是 null（它不属于任何已保存的场景）；而场景实例的每一个节点
+		// 都由那个场景的根节点拥有。
+		//
+		// 【项目约定】禁止动态生成节点（用户 2026-09-21 明确要求）——
+		// 这一条断言就是那条约定在自检里的落地：谁把某一页改回代码建，
+		// 这里当场变红。
+		var pageOwners = new Godot.Collections.Dictionary();
+		bool allPagesFromScene = true;
+		foreach (Node page in editor.PageNodes())
+		{
+			bool fromScene = page.Owner is not null;
+			pageOwners[page.Name.ToString()] = fromScene;
+			allPagesFromScene &= fromScene;
+		}
+
+		r["page_owners_from_scene"] = pageOwners;
+		c.Put("pages_come_from_scene", allPagesFromScene);
 
 		// 切页：每一页都要能切到、并且切过去之后它自己的列表是填好的。
 		// <b>顺带验"页签下标常量与添加次序一致"</b> —— 加一页时最容易错的就是这里，
@@ -212,6 +241,18 @@ internal static class DevEditorSim
 
 		r["editor_button_text"] = hud.EditorButtonText;
 		r["editor_button_rect"] = RectArray(rect);
+
+		// 顶栏那两个按钮<b>不许压到底部信息栏</b>（用户实测反馈：它们原先压在顶栏的文字上）。
+		// 按钮是绝对定位的、文字在 VBox 里 —— 这种"两套定位方式混用"的布局正是最容易压住的一种，
+		// 所以在这里也钉一条（DevReport 的 hud_layout 那一节量得更全）。
+		Rect2 infoBar = hud.InfoBarRectForTest;
+		Rect2 saveRect = hud.SaveButton.GetGlobalRect();
+		r["hud_info_bar_rect"] = RectArray(infoBar);
+		r["hud_save_button_rect"] = RectArray(saveRect);
+
+		c.Put("hud_editor_button_stays_in_top_band", rect.End.Y < infoBar.Position.Y);
+		c.Put("hud_save_button_stays_in_top_band", saveRect.End.Y < infoBar.Position.Y);
+		c.Put("hud_info_bar_has_height", infoBar.Size.Y > 8f);
 
 		c.Put("hud_editor_button_exists", GodotObject.IsInstanceValid(button));
 		c.Put("hud_editor_button_has_size", rect.Size.X >= 100f && rect.Size.Y >= 20f);

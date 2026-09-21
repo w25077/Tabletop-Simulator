@@ -40,22 +40,36 @@ public abstract partial class EditorPage : Control
 		SetAnchorsPreset(LayoutPreset.FullRect);
 		MouseFilter = MouseFilterEnum.Pass;
 
-		BuildContent();
-
+		// <b>这一层 <c>_Ready</c> 里只做"撑满"这件事。</b>
+		//
+		// 界面的其余部分（控件树）现在<b>写在 .tscn 里</b>（每个分页一个
+		// <c>scenes/editor/*.tscn</c>），子类只在自己的 <c>_Ready</c> 里
+		// <c>GetNode</c> 取出来接线 —— 【项目约定】禁止动态生成节点。
+		//
 		// <b>刻意不在这里调 <c>OnShown()</c>。</b>
 		//
 		// Godot 是"子节点先 _Ready"，所以这一行会在 <c>EditorPanel.Build()</c>
 		// 还没跑完的时候执行 —— 而 <c>OnShown</c> 链上有一个会去读面板页脚控件的
-		// <c>RefreshStatus</c>，那时那些控件<b>还不存在</b>。
+		// <c>RefreshStatus</c>，那时那些控件<b>还不存在</b>（或者面板的依赖还没注入）。
 		// 症状是一开机就刷 7 条 <c>NullReferenceException</c> 到 stderr，
 		// 而面板"看起来"完全正常、自检也全绿 —— 因为它发生在建界面的过程中，
 		// 没有任何一条断言会走到那里。
 		//
-		// 所以刷新由 <see cref="EditorPanel"/> 在整个面板建完之后统一发起。
+		// 所以刷新由 <see cref="EditorPanel"/> 在整棵树装配完之后统一发起。
 	}
 
-	/// <summary>建这一页的控件。在 <c>_Ready</c> 里调用，此时节点已在树中。</summary>
-	protected abstract void BuildContent();
+	/// <summary>
+	/// 取场景里的控件、接线。
+	///
+	/// 由 <see cref="EditorPanel"/> 在装配完之后对每一页调一次 ——
+	/// <b>而不是各页自己在 <c>_Ready</c> 里做</b>：面板的依赖（物件系统 / 相机 / HUD）
+	/// 是 <c>Main</c> 注入的，而各页的 <c>_Ready</c> 跑在那之前。
+	///
+	/// <b>它是抽象的，没有默认实现。</b>五个分页全部搬进
+	/// <c>scenes/editor/*.tscn</c> 之后，"忘了搬"这件事不该再有回退路径可以藏身 ——
+	/// 新加一页就必须实现它，否则编译不过。
+	/// </summary>
+	internal abstract void Initialize();
 
 	/// <summary>被切到前台 / 数据变了：按当前数据重刷列表与预览。</summary>
 	public abstract void OnShown();

@@ -85,20 +85,17 @@ public partial class SavePanel : Node
 	{
 		_button.Pressed += OnButtonPressed;
 
-		_menu = new PopupMenu { Name = "SaveMenu" };
+		// 【项目约定】菜单与对话框<b>都在 Main.tscn 里搭好</b>（挂在 HudRoot 下），
+		// 这里只取来接线。不许在代码里 new 节点。
+		_menu = GetParent().GetNode<PopupMenu>("HudRoot/SaveMenu");
 		_menu.IdPressed += OnItemPressed;
-		GetParent().AddChild(_menu);
 
-		_promptInput = new LineEdit { CustomMinimumSize = new Vector2(280f, 0f) };
-
-		_prompt = new AcceptDialog { Title = "存档名" };
-		_prompt.AddChild(_promptInput);
+		_prompt = GetParent().GetNode<AcceptDialog>("HudRoot/SaveNamePrompt");
+		_promptInput = _prompt.GetNode<LineEdit>("SaveNameInput");
 		_prompt.Confirmed += OnPromptConfirmed;
-		GetParent().AddChild(_prompt);
 
-		_confirm = new ConfirmationDialog { Title = "删除存档" };
+		_confirm = GetParent().GetNode<ConfirmationDialog>("HudRoot/DeleteSaveConfirm");
 		_confirm.Confirmed += OnDeleteConfirmed;
-		GetParent().AddChild(_confirm);
 
 		Refresh();
 	}
@@ -141,6 +138,14 @@ public partial class SavePanel : Node
 		_menu.AddItem("删除…", (int)Item.Delete);
 
 		_button.Text = $"存档：{CurrentSave} ▾";
+
+		// 底部信息栏里也显示当前存档名。
+		//
+		// <b>挂在这里而不是让 HUD 自己去读 <c>AppPaths.CurrentSave</c>：</b>
+		// 存档名的唯一真相是这个类里的 <c>CurrentSave</c>（它在改名 / 切档 / 新建 /
+		// 删档之后都会变），而 <c>Refresh()</c> 恰好是这四条路的公共出口 ——
+		// 让 HUD 自己去查一个"同步的副本"，迟早会查到旧值。
+		_hud.SetSaveName(CurrentSave);
 	}
 
 	private void OnButtonPressed()

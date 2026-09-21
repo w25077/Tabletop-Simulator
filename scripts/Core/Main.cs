@@ -127,13 +127,18 @@ public partial class Main : Node2D
 		// 建在这里而不是 Main.tscn 里：少一处手工同步场景文件的地方
 		// （编辑器把内存里旧场景写回去过一次，代价很大）。
 		Log = LogPanel.Attach(_hud, Undo, _hud);
+		Log.Initialize();
 
 		// 存档界面（M4 第 8 步）。
 		Save = SavePanel.Attach(_hud, _hud, _hud.SaveButton, Objects, Zones, _board.Theme, Undo);
 
-		// 运行时编辑器（M5）。挂在 HUD 层的 <c>HudRoot</c> 下、<b>存档面板之后</b> ——
-		// 它是全屏的，先加会挡住顶栏那个「存档 ▾」按钮。
+		// 运行时编辑器（M5）。面板与遮罩层在 Main.tscn 里搭好、挂在 HudRoot 下、
+		// <b>排在存档面板之后</b> —— 它是全屏的，先加会挡住顶栏那两个按钮。
+		//
+		// <b>Attach 之后必须显式 Initialize 一次</b>：面板的 _Ready 跑在 Main._Ready
+		// <b>之前</b>（Godot 是子节点先 _Ready），那时依赖还没塞进去。
 		Editor = EditorPanel.Attach(_hud, Objects, Zones, _board, _camera, _hud);
+		Editor.Initialize();
 
 		// 「保存」这个动作只有一条路：编辑器的保存按钮与 <c>Ctrl+S</c> 都走 <see cref="Save"/>。
 		// 编辑器不直接依赖 SavePanel 的类型 —— 两者都要存，但"谁来存"只该有一个答案。

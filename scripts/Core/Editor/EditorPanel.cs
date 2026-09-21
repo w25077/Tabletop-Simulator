@@ -115,23 +115,52 @@ public partial class EditorPanel : Control
 	/// <summary>画区域的遮罩层（自检要直接驱动它，验"整条拖拽"而不只是服务方法）。</summary>
 	internal ZoneDrawOverlay Overlay => _overlay;
 
-	/// <summary>建面板并挂到 HUD 层上（与 <c>LogPanel</c> / <c>SavePanel</c> 同一套路）。</summary>
+	/// <summary>
+	/// 把场景里那个编辑器面板接上依赖并返回它。
+	///
+	/// <b>它不再新建节点</b>（【项目约定】禁止动态生成节点）：面板与遮罩层都在
+	/// <c>Main.tscn</c> 里搭好、挂在 <c>HudRoot</c> 下、排在存档面板之后
+	/// （全屏面板先加会挡住顶栏那两个按钮）。
+	///
+	/// 依赖仍然在这个方法里塞进字段，而不是让 <c>_Ready</c> 自己去 <c>GetNode</c> 找
+	/// 物件系统 / 区域系统 —— 那些是**同级的兄弟节点、且由 <c>Main</c> 装配**，
+	/// 面板自己去猜路径只会多一处会漂移的耦合。
+	/// </summary>
 	public static EditorPanel Attach(
 		CanvasLayer layer, ObjectManager objects, ZoneManager zones, Board board,
 		BoardCamera camera, Hud hud)
 	{
-		EditorPanel panel = new() { Name = "EditorPanel" };
+		EditorPanel panel = layer.GetNode<EditorPanel>("HudRoot/EditorPanel");
 
-		// 依赖先塞进字段，UI 在 _Ready 里建（原因见类注释第 2 条）。
 		panel._objects = objects;
 		panel._zones = zones;
 		panel._board = board;
 		panel._camera = camera;
 		panel._hud = hud;
 
-		layer.AddChild(panel);
 		return panel;
-	}	public override void _Ready()
+	}
+
+	/// <summary>
+	/// <b>刻意不在 <c>_Ready</c> 里建界面 / 挂信号。</b>
+	///
+	/// 面板现在活在 <c>Main.tscn</c> 里，于是它的 <c>_Ready</c> 跑在
+	/// <c>Main._Ready</c> <b>之前</b>（Godot 是子节点先 <c>_Ready</c>）——
+	/// 而那会儿 <see cref="Attach"/> 还没把物件系统 / 区域系统 / 相机塞进来。
+	/// 就地建界面会一路 NRE（第一次改完就是这么炸的：<c>CurrentPage()</c> 里 `_tabs` 还是 null）。
+	///
+	/// 所以初始化改成 <c>Main</c> 在装配完之后显式调一次 <see cref="Initialize"/>。
+	/// 这与 M5 那条"刷新要排在整棵树建完之后"是同一个道理，只是"谁先谁后"换了个方向。
+	/// </summary>
+	public override void _Ready()
+	{
+	}
+
+	/// <summary>
+	/// 装配完成之后调一次：取场景里的控件、把页挂进页签容器、接信号。
+	/// 由 <c>Main._Ready</c> 在 <see cref="Attach"/> 之后立刻调用。
+	/// </summary>
+	public void Initialize()
 	{
 		Build();
 
@@ -188,99 +217,52 @@ public partial class EditorPanel : Control
 
 	private void Build()
 	{
-		// 顶栏下沿 → 底部提示条上沿，左右各留 8px。
-		// 手动锚点而不是 preset：preset 里没有"顶栏下沿到提示条"这一档（M1 栽过）。
-		SetAnchorsPreset(LayoutPreset.FullRect);
-		OffsetLeft = 8f;
-		OffsetRight = -8f;
-		OffsetTop = 50f;
-		OffsetBottom = -34f;
+		// 【项目约定】面板的骨架（Bg / Column / Header / Tabs / Footer）与遮罩层
+		// <b>都在 Main.tscn 里搭好</b>（挂在 HudRoot 下、排在其它 HUD 之后），
+		// 这里只取来接线。矩形与锚点在场景里：左右各留 8px、上让开顶栏、下让开提示条。
+		//
+		// （M5 时这里是纯代码建树，理由是"少一处要手工同步的场景文件"；
+		//   用户 2026-09-21 明确要求改成场景搭建，见 docs/HANDOFF.md 第 29 条。）
+		_dirtyLabel = GetNode<Label>("Bg/Column/Header/DirtyLabel");
+		_statusLabel = GetNode<Label>("Bg/Column/Footer/StatusLabel");
+		_tabs = GetNode<TabContainer>("Bg/Column/Tabs");
 
-		MouseFilter = MouseFilterEnum.Stop;   // 挡住底下的桌面交互
-		Visible = false;
+		GetNode<Button>("Bg/Column/Header/CloseButton").Pressed += Close;
+		GetNode<Button>("Bg/Column/Footer/SaveButton").Pressed += () => _hud.RequestSave();
 
-		var bg = new PanelContainer();
-		bg.SetAnchorsPreset(LayoutPreset.FullRect);
-		AddChild(bg);
-
-		var column = new VBoxContainer();
-		column.AddThemeConstantOverride("separation", 6);
-		bg.AddChild(column);
-
-		column.AddChild(BuildHeader());
-
-		_tabs = new TabContainer
-		{
-			Name = "Tabs",
-			SizeFlagsVertical = SizeFlags.ExpandFill,
-			SizeFlagsHorizontal = SizeFlags.ExpandFill,
-		};
-
-		column.AddChild(_tabs);
-
-		_cardPage = new CardEditorPage { Name = "卡牌" };
-		_tokenPage = new TokenEditorPage { Name = "指示物" };
-		_deckPage = new DeckEditorPage { Name = "卡组" };
-		_boardPage = new BoardEditorPage { Name = "桌面" };
-		_zonePage = new ZoneEditorPage { Name = "区域" };
+		// 五个分页是**场景实例**（scenes/editor/*.tscn）—— 在编辑器里打开
+		// Main.tscn 就能看到它们、双击进去改它们的内部。
+		//
+		// 用强类型的 GetNode 而不是"缺了就造一个"：后者会把
+		// "忘了往场景里加一页"这件事藏起来 —— 面板看起来正常，
+		// 只有退出编辑器重新打开场景时才会发现那一页不在文件里。
+		_cardPage = _tabs.GetNode<CardEditorPage>("CardPage");
+		_tokenPage = _tabs.GetNode<TokenEditorPage>("TokenPage");
+		_deckPage = _tabs.GetNode<DeckEditorPage>("DeckPage");
+		_boardPage = _tabs.GetNode<BoardEditorPage>("BoardPage");
+		_zonePage = _tabs.GetNode<ZoneEditorPage>("ZonePage");
 
 		foreach (EditorPage page in Pages())
 		{
 			page.Bind(_objects, _zones, _board, _camera, _hud, this);
-			_tabs.AddChild(page);
+			page.Initialize();
 		}
 
 		// 画区域的遮罩层铺满整个视口（原因见 ZoneDrawOverlay 的说明），
-		// 挂到<b>同一个 HudRoot 下、面板之后</b>（后添加 = 画在上面）。
+		// 挂在<b>同一个 HudRoot 下、面板之后</b>（后添加 = 画在上面）。
 		//
 		// <b>它不能是面板的子节点。</b>第一版就是那样写的，结果它的矩形恒为 0 ——
 		// 因为面板自己 <c>Visible = false</c>，而<b>不可见的 Control 子树会被跳过布局</b>。
 		// 于是"画区域"点下去什么都不发生：遮罩零尺寸 → 收不到鼠标事件。
 		// 这与 M4 那条"0 高度面板"是同一个坑的另一种长相：
 		// <b>矩形为 0 的控件不会报错，它只是永远收不到输入。</b>
-		_overlay = new ZoneDrawOverlay { Name = "ZoneDrawOverlay" };
+		// 面板自己现在就挂在 <c>HudRoot</c> 下，所以遮罩层是它的**兄弟**：
+		// 路径从父节点（HudRoot）算，而不是从 CanvasLayer 算。
+		_overlay = GetParent().GetNode<ZoneDrawOverlay>("ZoneDrawOverlay");
 		_overlay.Bind(_zonePage, _zones, _camera, _hud, this);
-		GetParent().AddChild(_overlay);
 		_zonePage.BindOverlay(_overlay);
-
-		column.AddChild(BuildFooter());
 	}
 
-	private Control BuildHeader()
-	{
-		var row = new HBoxContainer { Name = "Header" };
-		row.AddThemeConstantOverride("separation", 10);
-
-		_dirtyLabel = new Label { Text = "运行时编辑器" };
-		row.AddChild(_dirtyLabel);
-
-		row.AddChild(new Control { SizeFlagsHorizontal = SizeFlags.ExpandFill });
-
-		// 文字里把两条退出方式都写上：顶栏那个入口按钮与这里要能互相印证
-		// （用户实测反馈第 1 条：`Esc` 关不掉，而面板上没有任何地方说它能关）。
-		var close = new Button { Text = "关闭　F1 / Esc" };
-		close.Pressed += Close;
-		row.AddChild(close);
-
-		return row;
-	}
-
-	private Control BuildFooter()
-	{
-		var row = new HBoxContainer { Name = "Footer" };
-		row.AddThemeConstantOverride("separation", 10);
-
-		_statusLabel = new Label { Text = "" };
-		row.AddChild(_statusLabel);
-
-		row.AddChild(new Control { SizeFlagsHorizontal = SizeFlags.ExpandFill });
-
-		var save = new Button { Text = "保存到存档　Ctrl+S" };
-		save.Pressed += () => _hud.RequestSave();
-		row.AddChild(save);
-
-		return row;
-	}
 
 	// ------------------------------------------------------------------ 开关
 
@@ -455,8 +437,15 @@ public partial class EditorPanel : Control
 	/// 而"页签下标常量"与"实际添加次序"不一致的症状是
 	/// <c>SwitchTab(TabDecks)</c> 切到了别的页 —— 很难一眼看出来。
 	/// </summary>
-	private EditorPage[] Pages() => new EditorPage[]
+	/// <summary>
+	/// 五个分页节点（自检用：验它们**来自场景**而不是代码建的）。
+	/// </summary>
+	internal Node[] PageNodes() => new Node[]
 	{
+		_cardPage, _tokenPage, _deckPage, _boardPage, _zonePage,
+	};
+
+	private EditorPage[] Pages() => new EditorPage[]	{
 		_cardPage, _tokenPage, _deckPage, _boardPage, _zonePage,
 	};
 

@@ -23,114 +23,42 @@ public partial class BoardEditorPage : EditorPage
 	private OptionButton _backgroundImage = null!;
 	private Label _imageHint = null!;
 
-	protected override void BuildContent()
+	/// <summary>
+	/// 取场景里的控件并接线（【项目约定】禁止动态生成节点）。
+	///
+	/// 控件树在 <c>scenes/editor/BoardEditorPage.tscn</c> 里 ——
+	/// 在编辑器里打开它就能看到这一页长什么样、每个控件的属性是什么，
+	/// 改布局不用编译、不用截图。
+	/// </summary>
+	internal override void Initialize()
 	{
-		var scroll = new ScrollContainer
-		{
-			SizeFlagsVertical = SizeFlags.ExpandFill,
-			HorizontalScrollMode = ScrollContainer.ScrollMode.Disabled,
-		};
-		AddChild(scroll);
+		_backgroundImage = GetNode<OptionButton>("Scroll/Column/BgRow/BackgroundImage");
+		_imageHint = GetNode<Label>("Scroll/Column/BgRow/ImageHint");
+		_background = GetNode<ColorPickerButton>("Scroll/Column/ColorRow/Background");
+		_tileBackground = GetNode<CheckBox>("Scroll/Column/ColorRow/TileBackground");
+		_width = GetNode<LineEdit>("Scroll/Column/SizeRow/Width");
+		_height = GetNode<LineEdit>("Scroll/Column/SizeRow/Height");
+		_showGrid = GetNode<CheckBox>("Scroll/Column/GridRow/ShowGrid");
+		_gridSize = GetNode<SpinBox>("Scroll/Column/GridRow/GridSize");
+		_majorEvery = GetNode<SpinBox>("Scroll/Column/GridRow/MajorEvery");
+		_showBounds = GetNode<CheckBox>("Scroll/Column/BoundsRow/ShowBounds");
+		_border = GetNode<ColorPickerButton>("Scroll/Column/BoundsRow/Border");
 
-		var column = new VBoxContainer { SizeFlagsHorizontal = SizeFlags.ExpandFill };
-		column.AddThemeConstantOverride("separation", 8);
-		scroll.AddChild(column);
-
-		// ---- 背景 ----
-		column.AddChild(new Label { Text = "背景" });
-
-		var bgRow = new HBoxContainer();
-		bgRow.AddThemeConstantOverride("separation", 8);
-		column.AddChild(bgRow);
-
-		bgRow.AddChild(new Label { Text = "背景图：" });
-		_backgroundImage = new OptionButton { CustomMinimumSize = new Vector2(280f, 0f) };
 		_backgroundImage.ItemSelected += _ => ApplyImage();
-		bgRow.AddChild(_backgroundImage);
-
-		var rescan = new Button { Text = "重新扫描图片" };
-		rescan.Pressed += RefreshImageList;
-		bgRow.AddChild(rescan);
-
-		_imageHint = new Label { Text = "" };
-		bgRow.AddChild(_imageHint);
-
-		var colorRow = new HBoxContainer();
-		colorRow.AddThemeConstantOverride("separation", 8);
-		column.AddChild(colorRow);
-
-		colorRow.AddChild(new Label { Text = "底色：" });
-		_background = new ColorPickerButton { CustomMinimumSize = new Vector2(120f, 28f) };
+		GetNode<Button>("Scroll/Column/BgRow/RescanButton").Pressed += RefreshImageList;
 		_background.ColorChanged += _ => Mutate(theme => theme.BackgroundColor = _background.Color);
-		colorRow.AddChild(_background);
-
-		_tileBackground = new CheckBox { Text = "平铺（不勾 = 拉伸铺满）" };
 		_tileBackground.Toggled += on => Mutate(theme => theme.BackgroundTile = on);
-		colorRow.AddChild(_tileBackground);
-
-		// ---- 尺寸 ----
-		column.AddChild(new Label { Text = "桌面尺寸（世界坐标，左上角固定在原点）" });
-
-		var sizeRow = new HBoxContainer();
-		sizeRow.AddThemeConstantOverride("separation", 8);
-		column.AddChild(sizeRow);
-
-		sizeRow.AddChild(new Label { Text = "宽：" });
-		_width = new LineEdit { CustomMinimumSize = new Vector2(110f, 0f) };
 		_width.TextSubmitted += _ => ApplySize();
-		sizeRow.AddChild(_width);
-
-		sizeRow.AddChild(new Label { Text = "高：" });
-		_height = new LineEdit { CustomMinimumSize = new Vector2(110f, 0f) };
 		_height.TextSubmitted += _ => ApplySize();
-		sizeRow.AddChild(_height);
-
-		var applySize = new Button { Text = "应用尺寸" };
-		applySize.Pressed += ApplySize;
-		sizeRow.AddChild(applySize);
-
-		var fit = new Button { Text = "把整桌装进视野" };
-		fit.Pressed += () => Camera.FocusOnRect(Board.BoardRect, 40f, 1f);
-		sizeRow.AddChild(fit);
-
-		// ---- 网格 ----
-		column.AddChild(new Label { Text = "网格" });
-
-		var gridRow = new HBoxContainer();
-		gridRow.AddThemeConstantOverride("separation", 8);
-		column.AddChild(gridRow);
-
-		_showGrid = new CheckBox { Text = "显示网格" };
+		GetNode<Button>("Scroll/Column/SizeRow/ApplySizeButton").Pressed += ApplySize;
+		GetNode<Button>("Scroll/Column/SizeRow/FitButton").Pressed +=
+			() => Camera.FocusOnRect(Board.BoardRect, 40f, 1f);
 		_showGrid.Toggled += on => Mutate(theme => theme.ShowGrid = on);
-		gridRow.AddChild(_showGrid);
-
-		gridRow.AddChild(new Label { Text = "格宽：" });
-		_gridSize = new SpinBox { MinValue = 10, MaxValue = 2000, Step = 10, CustomMinimumSize = new Vector2(100f, 0f) };
 		_gridSize.ValueChanged += v => Mutate(theme => theme.GridSize = (int)v);
-		gridRow.AddChild(_gridSize);
-
-		gridRow.AddChild(new Label { Text = "每几格一条粗线：" });
-		_majorEvery = new SpinBox { MinValue = 1, MaxValue = 20, Step = 1, CustomMinimumSize = new Vector2(90f, 0f) };
 		_majorEvery.ValueChanged += v => Mutate(theme => theme.MajorGridEvery = (int)v);
-		gridRow.AddChild(_majorEvery);
-
-		// ---- 边界 ----
-		var boundsRow = new HBoxContainer();
-		boundsRow.AddThemeConstantOverride("separation", 8);
-		column.AddChild(boundsRow);
-
-		_showBounds = new CheckBox { Text = "显示桌面边界" };
 		_showBounds.Toggled += on => Mutate(theme => theme.ShowBoardBounds = on);
-		boundsRow.AddChild(_showBounds);
-
-		boundsRow.AddChild(new Label { Text = "边界色：" });
-		_border = new ColorPickerButton { CustomMinimumSize = new Vector2(120f, 28f) };
 		_border.ColorChanged += _ => Mutate(theme => theme.BorderColor = _border.Color);
-		boundsRow.AddChild(_border);
-
-		var reset = new Button { Text = "恢复默认桌面" };
-		reset.Pressed += OnResetPressed;
-		column.AddChild(reset);
+		GetNode<Button>("Scroll/Column/ResetButton").Pressed += OnResetPressed;
 	}
 
 	public override void OnShown()

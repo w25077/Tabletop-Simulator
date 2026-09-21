@@ -1,0 +1,91 @@
+[gd_scene format=3 uid="uid://cqlgn8daa2ee3"]
+
+[ext_resource type="Script" uid="uid://c4yi865gtnklx" path="res://scripts/Core/Editor/DeckEditorPage.cs" id="1_deck"]
+
+[node name="PageDecks" type="Control"]
+layout_mode = 3
+anchors_preset = 15
+anchor_right = 1.0
+anchor_bottom = 1.0
+grow_horizontal = 2
+grow_vertical = 2
+mouse_filter = 1
+script = ExtResource("1_deck")
+
+[node name="Column" type="VBoxContainer" parent="."]
+layout_mode = 1
+anchors_preset = 15
+anchor_right = 1.0
+anchor_bottom = 1.0
+grow_horizontal = 2
+grow_vertical = 2
+theme_override_constants/separation = 8
+
+[node name="Top" type="HBoxContainer" parent="Column"]
+layout_mode = 2
+theme_override_constants/separation = 8
+
+[node name="DeckLabel" type="Label" parent="Column/Top"]
+layout_mode = 2
+text = "卡组："
+
+[node name="DeckPicker" type="OptionButton" parent="Column/Top"]
+custom_minimum_size = Vector2(220, 0)
+layout_mode = 2
+
+[node name="NewDeckButton" type="Button" parent="Column/Top"]
+layout_mode = 2
+text = "新建卡组"
+
+[node name="DeleteDeckButton" type="Button" parent="Column/Top"]
+layout_mode = 2
+text = "删除卡组"
+
+[node name="Summary" type="Label" parent="Column"]
+layout_mode = 2
+
+[node name="Scroll" type="ScrollContainer" parent="Column"]
+layout_mode = 2
+size_flags_vertical = 3
+horizontal_scroll_mode = 0
+
+[node name="DeckRows" type="VBoxContainer" parent="Column/Scroll"]
+layout_mode = 2
+size_flags_horizontal = 3
+theme_override_constants/separation = 4
+
+[node name="AddRow" type="HBoxContainer" parent="Column"]
+layout_mode = 2
+theme_override_constants/separation = 8
+
+[node name="AddLabel" type="Label" parent="Column/AddRow"]
+layout_mode = 2
+text = "加一张："
+
+[node name="CardPicker" type="OptionButton" parent="Column/AddRow"]
+layout_mode = 2
+size_flags_horizontal = 3
+
+[node name="AddButton" type="Button" parent="Column/AddRow"]
+layout_mode = 2
+text = "加入卡组"
+
+[node name="Actions" type="HBoxContainer" parent="Column"]
+layout_mode = 2
+theme_override_constants/separation = 8
+
+[node name="DealLabel" type="Label" parent="Column/Actions"]
+layout_mode = 2
+text = "发到："
+
+[node name="TargetZonePicker" type="OptionButton" parent="Column/Actions"]
+custom_minimum_size = Vector2(220, 0)
+layout_mode = 2
+
+[node name="DealButton" type="Button" parent="Column/Actions"]
+layout_mode = 2
+text = "按这副牌发一副"
+
+[node name="ScatterButton" type="Button" parent="Column/Actions"]
+layout_mode = 2
+text = "散着放到桌面"

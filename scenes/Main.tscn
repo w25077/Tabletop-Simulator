@@ -10,6 +10,14 @@
 [ext_resource type="Script" uid="uid://s01b5hi5cg0t" path="res://scripts/Dev/DevCapture.cs" id="6_c01mt"]
 [ext_resource type="Script" uid="uid://bea2llpknxlub" path="res://scripts/Core/Objects/ZoneManager.cs" id="7_zones"]
 [ext_resource type="Script" uid="uid://bsjqceoiw1tsc" path="res://scripts/Core/UndoSystem.cs" id="8_undo"]
+[ext_resource type="Script" uid="uid://exw5n28cjwax" path="res://scripts/Core/Editor/EditorPanel.cs" id="9_editor"]
+[ext_resource type="Script" uid="uid://lkt85x06gxom" path="res://scripts/Core/Editor/ZoneDrawOverlay.cs" id="10_overlay"]
+[ext_resource type="PackedScene" uid="uid://qwajmuv2brmy" path="res://scenes/editor/BoardEditorPage.tscn" id="11_page_board"]
+[ext_resource type="PackedScene" uid="uid://dtg5ksjrw24yq" path="res://scenes/editor/CardEditorPage.tscn" id="12_page_card"]
+[ext_resource type="PackedScene" uid="uid://bsyvdl6466r7a" path="res://scenes/editor/TokenEditorPage.tscn" id="13_page_token"]
+[ext_resource type="PackedScene" uid="uid://cqlgn8daa2ee3" path="res://scenes/editor/DeckEditorPage.tscn" id="14_page_deck"]
+[ext_resource type="PackedScene" uid="uid://djgu156vlftu7" path="res://scenes/editor/ZoneEditorPage.tscn" id="15_page_zone"]
+[ext_resource type="Script" uid="uid://bbev1xxgi6k1d" path="res://scripts/Core/LogPanel.cs" id="17_bb450"]
 
 [node name="Main" type="Node2D" unique_id=1146469549]
 script = ExtResource("1_vcsgt")
@@ -63,38 +71,24 @@ layout_mode = 2
 layout_mode = 2
 theme_override_constants/separation = 14
 
+[node name="SaveButton" type="Button" parent="HUD/HudRoot/Layout/TopBar/TopRow" unique_id=-164956295]
+custom_minimum_size = Vector2(150, 28)
+layout_mode = 2
+size_flags_vertical = 4
+tooltip_text = "存档：列出 / 新建 / 另存为 / 改名 / 删除（Ctrl+S 立即保存）"
+text = "存档 ▾"
+
+[node name="EditorButton" type="Button" parent="HUD/HudRoot/Layout/TopBar/TopRow" unique_id=-164956294]
+custom_minimum_size = Vector2(150, 28)
+layout_mode = 2
+size_flags_vertical = 4
+tooltip_text = "打开/关闭运行时编辑器（Esc 也能关）"
+text = "编辑器　F1"
+
 [node name="SaveNameLabel" type="Label" parent="HUD/HudRoot/Layout/TopBar/TopRow" unique_id=1221094329]
+visible = false
 layout_mode = 2
 text = "未命名存档"
-vertical_alignment = 1
-
-[node name="Sep1" type="VSeparator" parent="HUD/HudRoot/Layout/TopBar/TopRow" unique_id=358067391]
-layout_mode = 2
-
-[node name="ZoomLabel" type="Label" parent="HUD/HudRoot/Layout/TopBar/TopRow" unique_id=208744865]
-layout_mode = 2
-text = "缩放 100%"
-vertical_alignment = 1
-
-[node name="Sep2" type="VSeparator" parent="HUD/HudRoot/Layout/TopBar/TopRow" unique_id=705804469]
-layout_mode = 2
-
-[node name="ObjectLabel" type="Label" parent="HUD/HudRoot/Layout/TopBar/TopRow" unique_id=386697332]
-layout_mode = 2
-text = "物件 0"
-vertical_alignment = 1
-
-[node name="SelectionLabel" type="Label" parent="HUD/HudRoot/Layout/TopBar/TopRow" unique_id=1931858945]
-layout_mode = 2
-text = "选中 0"
-vertical_alignment = 1
-
-[node name="Sep3" type="VSeparator" parent="HUD/HudRoot/Layout/TopBar/TopRow" unique_id=705804470]
-layout_mode = 2
-
-[node name="ZoneLabel" type="Label" parent="HUD/HudRoot/Layout/TopBar/TopRow" unique_id=1931858946]
-layout_mode = 2
-text = "区域 0"
 vertical_alignment = 1
 
 [node name="Spacer" type="Control" parent="HUD/HudRoot/Layout/TopBar/TopRow" unique_id=383177900]
@@ -124,6 +118,14 @@ mouse_filter = 2
 layout_mode = 2
 horizontal_alignment = 1
 
+[node name="InfoBar" type="PanelContainer" parent="HUD/HudRoot/Layout" unique_id=-164956293]
+layout_mode = 2
+
+[node name="InfoLabel" type="Label" parent="HUD/HudRoot/Layout/InfoBar" unique_id=-164956292]
+layout_mode = 2
+text = "已保存"
+horizontal_alignment = 1
+
 [node name="HintBar" type="PanelContainer" parent="HUD/HudRoot/Layout" unique_id=937981451]
 layout_mode = 2
 
@@ -131,6 +133,168 @@ layout_mode = 2
 layout_mode = 2
 text = "滚轮 缩放　·　中键/右键/空格+左键 平移　·　左键拖 移物 / 空白拖 框选　·　拖到区域上方松手 归入区域　·　双击牌库或 D 抽牌　·　R 洗牌　·　Shift+拖 抽单张　·　F 翻面　·　[ ] 旋转 15°　·　Alt+滚轮 微旋　·　G 网格吸附　·　Ctrl+D 复制　·　Del 删除　·　Home 适配桌面"
 horizontal_alignment = 1
+
+[node name="SaveMenu" type="PopupMenu" parent="HUD/HudRoot" unique_id=-164956291]
+
+[node name="ObjectMenu" type="PopupMenu" parent="HUD/HudRoot" unique_id=-164956290]
+
+[node name="ZoneMenu" type="PopupMenu" parent="HUD/HudRoot" unique_id=-164956289]
+
+[node name="SaveNamePrompt" type="AcceptDialog" parent="HUD/HudRoot" unique_id=-164956288]
+title = "存档名"
+
+[node name="SaveNameInput" type="LineEdit" parent="HUD/HudRoot/SaveNamePrompt" unique_id=-164956287]
+offset_left = 8.0
+offset_top = 8.0
+offset_right = 288.0
+offset_bottom = 36.0
+
+[node name="DeleteSaveConfirm" type="ConfirmationDialog" parent="HUD/HudRoot" unique_id=-164956286]
+title = "删除存档"
+
+[node name="EditorPanel" type="Control" parent="HUD/HudRoot" unique_id=-164956285]
+visible = false
+layout_mode = 1
+anchors_preset = 15
+anchor_right = 1.0
+anchor_bottom = 1.0
+offset_left = 8.0
+offset_top = 50.0
+offset_right = -8.0
+offset_bottom = -34.0
+grow_horizontal = 2
+grow_vertical = 2
+script = ExtResource("9_editor")
+
+[node name="Bg" type="PanelContainer" parent="HUD/HudRoot/EditorPanel" unique_id=-164956284]
+layout_mode = 1
+anchors_preset = 15
+anchor_right = 1.0
+anchor_bottom = 1.0
+grow_horizontal = 2
+grow_vertical = 2
+
+[node name="Column" type="VBoxContainer" parent="HUD/HudRoot/EditorPanel/Bg" unique_id=-164956283]
+layout_mode = 2
+theme_override_constants/separation = 6
+
+[node name="Header" type="HBoxContainer" parent="HUD/HudRoot/EditorPanel/Bg/Column" unique_id=-164956282]
+layout_mode = 2
+theme_override_constants/separation = 10
+
+[node name="DirtyLabel" type="Label" parent="HUD/HudRoot/EditorPanel/Bg/Column/Header" unique_id=-164956281]
+layout_mode = 2
+text = "运行时编辑器"
+
+[node name="HeaderSpacer" type="Control" parent="HUD/HudRoot/EditorPanel/Bg/Column/Header" unique_id=-164956280]
+layout_mode = 2
+size_flags_horizontal = 3
+mouse_filter = 2
+
+[node name="CloseButton" type="Button" parent="HUD/HudRoot/EditorPanel/Bg/Column/Header" unique_id=-164956279]
+layout_mode = 2
+text = "关闭　F1 / Esc"
+
+[node name="Tabs" type="TabContainer" parent="HUD/HudRoot/EditorPanel/Bg/Column" unique_id=-164956278]
+layout_mode = 2
+size_flags_horizontal = 3
+size_flags_vertical = 3
+current_tab = 0
+
+[node name="CardPage" parent="HUD/HudRoot/EditorPanel/Bg/Column/Tabs" unique_id=152440005 instance=ExtResource("12_page_card")]
+layout_mode = 2
+metadata/_tab_index = 0
+
+[node name="TokenPage" parent="HUD/HudRoot/EditorPanel/Bg/Column/Tabs" unique_id=2077334666 instance=ExtResource("13_page_token")]
+visible = false
+layout_mode = 2
+metadata/_tab_index = 1
+
+[node name="DeckPage" parent="HUD/HudRoot/EditorPanel/Bg/Column/Tabs" unique_id=1498345344 instance=ExtResource("14_page_deck")]
+visible = false
+layout_mode = 2
+metadata/_tab_index = 2
+
+[node name="BoardPage" parent="HUD/HudRoot/EditorPanel/Bg/Column/Tabs" unique_id=1015176965 instance=ExtResource("11_page_board")]
+visible = false
+layout_mode = 2
+metadata/_tab_index = 3
+
+[node name="ZonePage" parent="HUD/HudRoot/EditorPanel/Bg/Column/Tabs" unique_id=1314470768 instance=ExtResource("15_page_zone")]
+visible = false
+layout_mode = 2
+metadata/_tab_index = 4
+
+[node name="Footer" type="HBoxContainer" parent="HUD/HudRoot/EditorPanel/Bg/Column" unique_id=-164956277]
+layout_mode = 2
+theme_override_constants/separation = 10
+
+[node name="StatusLabel" type="Label" parent="HUD/HudRoot/EditorPanel/Bg/Column/Footer" unique_id=-164956276]
+layout_mode = 2
+
+[node name="FooterSpacer" type="Control" parent="HUD/HudRoot/EditorPanel/Bg/Column/Footer" unique_id=-164956275]
+layout_mode = 2
+size_flags_horizontal = 3
+mouse_filter = 2
+
+[node name="SaveButton" type="Button" parent="HUD/HudRoot/EditorPanel/Bg/Column/Footer" unique_id=-164956274]
+layout_mode = 2
+text = "保存到存档　Ctrl+S"
+
+[node name="ZoneDrawOverlay" type="Control" parent="HUD/HudRoot" unique_id=-164956273]
+visible = false
+layout_mode = 1
+anchors_preset = 15
+anchor_right = 1.0
+anchor_bottom = 1.0
+grow_horizontal = 2
+grow_vertical = 2
+script = ExtResource("10_overlay")
+
+[node name="LogPanel" type="Control" parent="HUD/HudRoot" unique_id=1359763277]
+visible = false
+layout_mode = 1
+anchors_preset = 11
+anchor_left = 1.0
+anchor_right = 1.0
+anchor_bottom = 1.0
+offset_left = -328.0
+offset_top = 50.0
+offset_right = -8.0
+offset_bottom = -34.0
+grow_horizontal = 0
+grow_vertical = 2
+script = ExtResource("17_bb450")
+
+[node name="Bg" type="PanelContainer" parent="HUD/HudRoot/LogPanel" unique_id=1587985999]
+layout_mode = 1
+anchors_preset = 15
+anchor_right = 1.0
+anchor_bottom = 1.0
+grow_horizontal = 2
+grow_vertical = 2
+
+[node name="Column" type="VBoxContainer" parent="HUD/HudRoot/LogPanel/Bg" unique_id=2084536086]
+layout_mode = 2
+theme_override_constants/separation = 6
+
+[node name="Title" type="Label" parent="HUD/HudRoot/LogPanel/Bg/Column" unique_id=725826358]
+layout_mode = 2
+text = "操作日志"
+
+[node name="Scroll" type="ScrollContainer" parent="HUD/HudRoot/LogPanel/Bg/Column" unique_id=2133907963]
+layout_mode = 2
+size_flags_vertical = 3
+horizontal_scroll_mode = 0
+
+[node name="Rows" type="VBoxContainer" parent="HUD/HudRoot/LogPanel/Bg/Column/Scroll" unique_id=1093554837]
+layout_mode = 2
+size_flags_horizontal = 3
+theme_override_constants/separation = 2
+
+[node name="CopyButton" type="Button" parent="HUD/HudRoot/LogPanel/Bg/Column" unique_id=1761248796]
+layout_mode = 2
+text = "复制全部"
 
 [node name="DevCapture" type="Node" parent="." unique_id=118026493]
 script = ExtResource("6_c01mt")

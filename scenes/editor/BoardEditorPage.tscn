@@ -1,0 +1,152 @@
+[gd_scene load_steps=2 format=3 uid="uid://cboardeditpage01"]
+
+[ext_resource type="Script" uid="uid://7tobax5qdyjx" path="res://scripts/Core/Editor/BoardEditorPage.cs" id="1_board"]
+
+[node name="PageBoard" type="Control"]
+layout_mode = 3
+anchors_preset = 15
+anchor_right = 1.0
+anchor_bottom = 1.0
+grow_horizontal = 2
+grow_vertical = 2
+mouse_filter = 1
+script = ExtResource("1_board")
+
+[node name="Scroll" type="ScrollContainer" parent="."]
+layout_mode = 1
+anchors_preset = 15
+anchor_right = 1.0
+anchor_bottom = 1.0
+grow_horizontal = 2
+grow_vertical = 2
+horizontal_scroll_mode = 0
+
+[node name="Column" type="VBoxContainer" parent="Scroll"]
+layout_mode = 2
+size_flags_horizontal = 3
+theme_override_constants/separation = 8
+
+[node name="BackgroundHeader" type="Label" parent="Scroll/Column"]
+layout_mode = 2
+text = "背景"
+
+[node name="BgRow" type="HBoxContainer" parent="Scroll/Column"]
+layout_mode = 2
+theme_override_constants/separation = 8
+
+[node name="BgLabel" type="Label" parent="Scroll/Column/BgRow"]
+layout_mode = 2
+text = "背景图："
+
+[node name="BackgroundImage" type="OptionButton" parent="Scroll/Column/BgRow"]
+custom_minimum_size = Vector2(280, 0)
+layout_mode = 2
+
+[node name="RescanButton" type="Button" parent="Scroll/Column/BgRow"]
+layout_mode = 2
+text = "重新扫描图片"
+
+[node name="ImageHint" type="Label" parent="Scroll/Column/BgRow"]
+layout_mode = 2
+
+[node name="ColorRow" type="HBoxContainer" parent="Scroll/Column"]
+layout_mode = 2
+theme_override_constants/separation = 8
+
+[node name="ColorLabel" type="Label" parent="Scroll/Column/ColorRow"]
+layout_mode = 2
+text = "底色："
+
+[node name="Background" type="ColorPickerButton" parent="Scroll/Column/ColorRow"]
+custom_minimum_size = Vector2(120, 28)
+layout_mode = 2
+
+[node name="TileBackground" type="CheckBox" parent="Scroll/Column/ColorRow"]
+layout_mode = 2
+text = "平铺（不勾 = 拉伸铺满）"
+
+[node name="SizeHeader" type="Label" parent="Scroll/Column"]
+layout_mode = 2
+text = "桌面尺寸（世界坐标，左上角固定在原点）"
+
+[node name="SizeRow" type="HBoxContainer" parent="Scroll/Column"]
+layout_mode = 2
+theme_override_constants/separation = 8
+
+[node name="WidthLabel" type="Label" parent="Scroll/Column/SizeRow"]
+layout_mode = 2
+text = "宽："
+
+[node name="Width" type="LineEdit" parent="Scroll/Column/SizeRow"]
+custom_minimum_size = Vector2(110, 0)
+layout_mode = 2
+
+[node name="HeightLabel" type="Label" parent="Scroll/Column/SizeRow"]
+layout_mode = 2
+text = "高："
+
+[node name="Height" type="LineEdit" parent="Scroll/Column/SizeRow"]
+custom_minimum_size = Vector2(110, 0)
+layout_mode = 2
+
+[node name="ApplySizeButton" type="Button" parent="Scroll/Column/SizeRow"]
+layout_mode = 2
+text = "应用尺寸"
+
+[node name="FitButton" type="Button" parent="Scroll/Column/SizeRow"]
+layout_mode = 2
+text = "把整桌装进视野"
+
+[node name="GridHeader" type="Label" parent="Scroll/Column"]
+layout_mode = 2
+text = "网格"
+
+[node name="GridRow" type="HBoxContainer" parent="Scroll/Column"]
+layout_mode = 2
+theme_override_constants/separation = 8
+
+[node name="ShowGrid" type="CheckBox" parent="Scroll/Column/GridRow"]
+layout_mode = 2
+text = "显示网格"
+
+[node name="GridSizeLabel" type="Label" parent="Scroll/Column/GridRow"]
+layout_mode = 2
+text = "格宽："
+
+[node name="GridSize" type="SpinBox" parent="Scroll/Column/GridRow"]
+custom_minimum_size = Vector2(100, 0)
+layout_mode = 2
+min_value = 10.0
+max_value = 2000.0
+step = 10.0
+
+[node name="MajorEveryLabel" type="Label" parent="Scroll/Column/GridRow"]
+layout_mode = 2
+text = "每几格一条粗线："
+
+[node name="MajorEvery" type="SpinBox" parent="Scroll/Column/GridRow"]
+custom_minimum_size = Vector2(90, 0)
+layout_mode = 2
+min_value = 1.0
+max_value = 20.0
+step = 1.0
+
+[node name="BoundsRow" type="HBoxContainer" parent="Scroll/Column"]
+layout_mode = 2
+theme_override_constants/separation = 8
+
+[node name="ShowBounds" type="CheckBox" parent="Scroll/Column/BoundsRow"]
+layout_mode = 2
+text = "显示桌面边界"
+
+[node name="BorderLabel" type="Label" parent="Scroll/Column/BoundsRow"]
+layout_mode = 2
+text = "边界色："
+
+[node name="Border" type="ColorPickerButton" parent="Scroll/Column/BoundsRow"]
+custom_minimum_size = Vector2(120, 28)
+layout_mode = 2
+
+[node name="ResetButton" type="Button" parent="Scroll/Column"]
+layout_mode = 2
+text = "恢复默认桌面"

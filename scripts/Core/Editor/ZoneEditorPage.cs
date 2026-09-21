@@ -71,203 +71,91 @@ public partial class ZoneEditorPage : EditorPage
 
 	// ------------------------------------------------------------------ 建界面
 
-	protected override void BuildContent()
+	/// <summary>
+	/// 取场景里的控件并接线（【项目约定】禁止动态生成节点）。
+	///
+	/// 控件树在 <c>scenes/editor/ZoneEditorPage.tscn</c> 里。
+	///
+	/// 两处内容仍在代码里填，因为它们是**按枚举走的**：
+	/// "画什么类型"与"类型"两个下拉的项来自 <c>ZoneKind</c>、
+	/// 排版与进区朝向来自另两个枚举 —— 枚举加一档，下拉就该多一项，
+	/// 写进场景的话两者迟早不一致。这是"结构在场景、内容按数据填"的分界。
+	/// </summary>
+	internal override void Initialize()
 	{
-		var row = new HBoxContainer();
-		row.AddThemeConstantOverride("separation", 10);
-		row.SetAnchorsPreset(LayoutPreset.FullRect);
-		AddChild(row);
+		_zonePicker = GetNode<OptionButton>("Row/Left/ListScroll/ZonePicker");
+		_drawButton = GetNode<Button>("Row/Left/DrawButton");
+		_summary = GetNode<Label>("Row/Right/Summary");
+		_name = GetNode<LineEdit>("Row/Right/FormScroll/Form/NameRow/Name");
+		_kind = GetNode<OptionButton>("Row/Right/FormScroll/Form/KindPickRow/Kind");
+		_rectX = GetNode<LineEdit>("Row/Right/FormScroll/Form/RectRow/RectX");
+		_rectY = GetNode<LineEdit>("Row/Right/FormScroll/Form/RectRow/RectY");
+		_rectW = GetNode<LineEdit>("Row/Right/FormScroll/Form/RectRow/RectW");
+		_rectH = GetNode<LineEdit>("Row/Right/FormScroll/Form/RectRow/RectH");
+		_sortMode = GetNode<OptionButton>("Row/Right/FormScroll/Form/SortRow/SortMode");
+		_faceOnEnter = GetNode<OptionButton>("Row/Right/FormScroll/Form/FaceRow/FaceOnEnter");
+		_maxCards = GetNode<SpinBox>("Row/Right/FormScroll/Form/MaxRow/MaxCards");
+		_drawTarget = GetNode<OptionButton>("Row/Right/FormScroll/Form/DrawRow/DrawTargetPicker");
+		_drawCount = GetNode<SpinBox>("Row/Right/FormScroll/Form/DrawRow/DrawCount");
+		_snapOnDrop = GetNode<CheckBox>("Row/Right/FormScroll/Form/SnapOnDrop");
+		_drawOnDoubleClick = GetNode<CheckBox>("Row/Right/FormScroll/Form/DrawOnDoubleClick");
+		_enabled = GetNode<CheckBox>("Row/Right/FormScroll/Form/Enabled");
+		_tint = GetNode<ColorPickerButton>("Row/Right/FormScroll/Form/ColorRow/Tint");
+		_border = GetNode<ColorPickerButton>("Row/Right/FormScroll/Form/ColorRow/Border");
 
-		// ---- 左：区域列表 + 画区域 ----
-		var left = new VBoxContainer { CustomMinimumSize = new Vector2(240f, 0f) };
-		left.AddThemeConstantOverride("separation", 6);
-		row.AddChild(left);
+		// 「画什么类型」是左边那个下拉：它的值只存在页里（DrawKind），不改任何区域。
+		OptionButton drawKindPicker = GetNode<OptionButton>("Row/Left/KindRow/DrawKindPicker");
+		FillEnum(drawKindPicker, System.Enum.GetValues<ZoneKind>());
+		drawKindPicker.ItemSelected += idx =>
+			_drawKind = (ZoneKind)drawKindPicker.GetItemMetadata((int)idx).AsInt32();
 
-		left.AddChild(new Label { Text = "桌上的区域" });
+		FillEnum(_kind, System.Enum.GetValues<ZoneKind>());
+		FillEnum(_sortMode, System.Enum.GetValues<ZoneSortMode>());
+		FillEnum(_faceOnEnter, System.Enum.GetValues<FaceOnEnter>());
 
-		var scroll = new ScrollContainer
-		{
-			SizeFlagsVertical = SizeFlags.ExpandFill,
-			HorizontalScrollMode = ScrollContainer.ScrollMode.Disabled,
-		};
-		left.AddChild(scroll);
+		SubscribeText(_name, OnNameSubmitted);
+		foreach (LineEdit edit in new[] { _rectX, _rectY, _rectW, _rectH })
+			edit.TextSubmitted += _ => OnRectSubmitted();
 
-		_zonePicker = new OptionButton { Name = "ZonePicker", SizeFlagsHorizontal = SizeFlags.ExpandFill };
 		_zonePicker.ItemSelected += idx =>
 		{
 			SelectedZoneId = _zonePicker.GetItemMetadata((int)idx).AsString();
 			RefreshFields();
 		};
-		scroll.AddChild(_zonePicker);
 
-		// 画区域的类型档位：一个下拉 + 一个按钮。
-		// 下拉里放的是"画出来会是什么"，因为 ZoneDefaults 会给每种类型一整套出厂参数
-		// —— 十有八九不用再手改。
-		var kindRow = new HBoxContainer();
-		kindRow.AddThemeConstantOverride("separation", 6);
-		left.AddChild(kindRow);
-
-		kindRow.AddChild(new Label { Text = "画：" });
-		var drawKindPicker = new OptionButton { Name = "DrawKindPicker", SizeFlagsHorizontal = SizeFlags.ExpandFill };
-		foreach (ZoneKind kind in System.Enum.GetValues<ZoneKind>())
-		{
-			drawKindPicker.AddItem(ZoneDefaults.NameFor(kind));
-			drawKindPicker.SetItemMetadata(drawKindPicker.ItemCount - 1, (int)kind);
-		}
-
-		drawKindPicker.ItemSelected += idx =>
-		{
-			_drawKind = (ZoneKind)drawKindPicker.GetItemMetadata((int)idx).AsInt32();
-		};
-		kindRow.AddChild(drawKindPicker);
-
-		_drawButton = new Button { Text = "在画布上拖矩形", ToggleMode = true };
-		_drawButton.Toggled += on => SetDrawMode(on);
-		left.AddChild(_drawButton);
-
-		left.AddChild(new Label
-		{
-			Text = "打开模式后在桌面上按下并拖动。",
-			AutowrapMode = TextServer.AutowrapMode.WordSmart,
-		});
-
-		var delete = new Button { Text = "删除这块区域" };
-		delete.Pressed += OnDeletePressed;
-		left.AddChild(delete);
-
-		// ---- 右：属性 ----
-		var right = new VBoxContainer { SizeFlagsHorizontal = SizeFlags.ExpandFill };
-		right.AddThemeConstantOverride("separation", 6);
-		row.AddChild(right);
-
-		_summary = new Label { Text = "" };
-		right.AddChild(_summary);
-
-		var scroll2 = new ScrollContainer
-		{
-			SizeFlagsVertical = SizeFlags.ExpandFill,
-			HorizontalScrollMode = ScrollContainer.ScrollMode.Disabled,
-		};
-		right.AddChild(scroll2);
-
-		var form = new VBoxContainer { SizeFlagsHorizontal = SizeFlags.ExpandFill };
-		form.AddThemeConstantOverride("separation", 6);
-		scroll2.AddChild(form);
-
-		_name = AddText(form, "名称", OnNameSubmitted);
-
-		_kind = AddOption(form, "类型", System.Enum.GetValues<ZoneKind>(), OnKindChanged, out _);
-
-		var rectRow = new HBoxContainer();
-		rectRow.AddThemeConstantOverride("separation", 6);
-		form.AddChild(rectRow);
-
-		rectRow.AddChild(new Label { Text = "矩形 x/y/宽/高：" });
-		_rectX = AddSmall(rectRow);
-		_rectY = AddSmall(rectRow);
-		_rectW = AddSmall(rectRow);
-		_rectH = AddSmall(rectRow);
-
-		var applyRect = new Button { Text = "应用" };
-		applyRect.Pressed += OnRectSubmitted;
-		rectRow.AddChild(applyRect);
-
-		_sortMode = AddOption(form, "排版", System.Enum.GetValues<ZoneSortMode>(), OnSortChanged, out _);
-		_faceOnEnter = AddOption(form, "进区朝向", System.Enum.GetValues<FaceOnEnter>(), OnFaceChanged, out _);
-
-		_snapOnDrop = AddCheck(form, "拖入后归位到区域排出来的位置", on => Mutate(d => d.SnapOnDrop = on));
-
-		var maxRow = new HBoxContainer();
-		maxRow.AddThemeConstantOverride("separation", 6);
-		form.AddChild(maxRow);
-		maxRow.AddChild(new Label { Text = "容量上限（0 = 无限）：" });
-		_maxCards = new SpinBox { MinValue = 0, MaxValue = 999, Step = 1, CustomMinimumSize = new Vector2(90f, 0f) };
-		_maxCards.ValueChanged += v => Mutate(d => d.MaxCards = (int)v);
-		maxRow.AddChild(_maxCards);
-
-		_drawOnDoubleClick = AddCheck(form, "双击抽牌", on => Mutate(d => d.DrawOnDoubleClick = on));
-
-		var drawRow = new HBoxContainer();
-		drawRow.AddThemeConstantOverride("separation", 6);
-		form.AddChild(drawRow);
-		drawRow.AddChild(new Label { Text = "抽到哪：" });
-		_drawTarget = new OptionButton { Name = "DrawTargetPicker", CustomMinimumSize = new Vector2(200f, 0f) };
+		_kind.ItemSelected += idx => OnKindChanged((ZoneKind)_kind.GetItemMetadata((int)idx).AsInt32());
+		_sortMode.ItemSelected += idx => OnSortChanged((ZoneSortMode)_sortMode.GetItemMetadata((int)idx).AsInt32());
+		_faceOnEnter.ItemSelected += idx => OnFaceChanged((FaceOnEnter)_faceOnEnter.GetItemMetadata((int)idx).AsInt32());
 		_drawTarget.ItemSelected += idx => Mutate(d => d.DrawTargetId = _drawTarget.GetItemMetadata((int)idx).AsString());
-		drawRow.AddChild(_drawTarget);
 
-		drawRow.AddChild(new Label { Text = "一次抽：" });
-		_drawCount = new SpinBox { MinValue = 1, MaxValue = 20, Step = 1, CustomMinimumSize = new Vector2(80f, 0f) };
+		_maxCards.ValueChanged += v => Mutate(d => d.MaxCards = (int)v);
 		_drawCount.ValueChanged += v => Mutate(d => d.DrawCount = (int)v);
-		drawRow.AddChild(_drawCount);
-
-		_enabled = AddCheck(form, "启用（关掉 = 锁定，不收拖入也不抽牌）", on => Mutate(d => d.Enabled = on));
-
-		var colorRow = new HBoxContainer();
-		colorRow.AddThemeConstantOverride("separation", 6);
-		form.AddChild(colorRow);
-		colorRow.AddChild(new Label { Text = "底色：" });
-		_tint = new ColorPickerButton { CustomMinimumSize = new Vector2(110f, 26f) };
+		_snapOnDrop.Toggled += on => Mutate(d => d.SnapOnDrop = on);
+		_drawOnDoubleClick.Toggled += on => Mutate(d => d.DrawOnDoubleClick = on);
+		_enabled.Toggled += on => Mutate(d => d.Enabled = on);
 		_tint.ColorChanged += c => Mutate(d => d.Tint = c);
-		colorRow.AddChild(_tint);
-		colorRow.AddChild(new Label { Text = "边框：" });
-		_border = new ColorPickerButton { CustomMinimumSize = new Vector2(110f, 26f) };
 		_border.ColorChanged += c => Mutate(d => d.BorderColor = c);
-		colorRow.AddChild(_border);
+
+		_drawButton.Toggled += on => SetDrawMode(on);
+		GetNode<Button>("Row/Right/FormScroll/Form/RectRow/ApplyRectButton").Pressed += OnRectSubmitted;
+		GetNode<Button>("Row/Left/DeleteButton").Pressed += OnDeletePressed;
 	}
 
-	private LineEdit AddText(Control parent, string label, System.Action<string> onSubmit)
+	/// <summary>把一个枚举的所有档位填进下拉，项元数据存枚举的整数值。</summary>
+	private static void FillEnum<T>(OptionButton picker, T[] values) where T : struct, System.Enum
 	{
-		var row = new HBoxContainer();
-		row.AddThemeConstantOverride("separation", 6);
-		parent.AddChild(row);
-		row.AddChild(new Label { Text = $"{label}：" });
-
-		var edit = new LineEdit { SizeFlagsHorizontal = SizeFlags.ExpandFill, CustomMinimumSize = new Vector2(200f, 0f) };
-		edit.TextSubmitted += t => onSubmit(t);
-		edit.FocusExited += () => onSubmit(edit.Text);
-		row.AddChild(edit);
-		return edit;
-	}
-
-	private LineEdit AddSmall(Control parent)
-	{
-		var edit = new LineEdit { CustomMinimumSize = new Vector2(70f, 0f) };
-		edit.TextSubmitted += _ => OnRectSubmitted();
-		parent.AddChild(edit);
-		return edit;
-	}
-
-	private OptionButton AddOption<T>(
-		Control parent, string label, T[] values, System.Action<T> onPicked, out string[] names)
-		where T : struct, System.Enum
-	{
-		names = new string[values.Length];
-		for (int i = 0; i < values.Length; i++)
-			names[i] = LabelFor(values[i]);
-
-		var row = new HBoxContainer();
-		row.AddThemeConstantOverride("separation", 6);
-		parent.AddChild(row);
-		row.AddChild(new Label { Text = $"{label}：" });
-
-		var picker = new OptionButton { CustomMinimumSize = new Vector2(200f, 0f), SizeFlagsHorizontal = SizeFlags.ExpandFill };
 		for (int i = 0; i < values.Length; i++)
 		{
-			picker.AddItem(names[i]);
+			picker.AddItem(LabelFor(values[i]));
 			picker.SetItemMetadata(picker.ItemCount - 1, System.Convert.ToInt32(values[i]));
 		}
-
-		picker.ItemSelected += idx => onPicked(values[(int)idx]);
-		row.AddChild(picker);
-		return picker;
 	}
 
-	private CheckBox AddCheck(Control parent, string label, System.Action<bool> onToggle)
+	/// <summary>把一个"提交才算数"的输入框接上回调（回车 / 失焦两条都算提交）。</summary>
+	private static void SubscribeText(LineEdit edit, System.Action<string> onSubmit)
 	{
-		var box = new CheckBox { Text = label };
-		box.Toggled += on => onToggle(on);
-		parent.AddChild(box);
-		return box;
+		edit.TextSubmitted += t => onSubmit(t);
+		edit.FocusExited += () => onSubmit(edit.Text);
 	}
 
 	/// <summary>枚举的中文名（区域类型用出厂名，其余用枚举名就够）。</summary>

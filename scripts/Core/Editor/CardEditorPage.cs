@@ -16,7 +16,6 @@ public partial class CardEditorPage : EditorPage
 {
 	private VBoxContainer _list = null!;
 	private Label _hint = null!;
-	private VBoxContainer _form = null!;
 	private CardPreview _preview = null!;
 
 	// ---- 卡池的三个动作（M5.5 第 2 条）----
@@ -81,242 +80,124 @@ public partial class CardEditorPage : EditorPage
 	/// <summary>列表里当前列出的卡牌 id，按显示次序。<b>自检靠它核对"列表与卡池一致"。</b></summary>
 	internal System.Collections.Generic.List<string> ListedIds { get; } = new();
 
-	protected override void BuildContent()
+	/// <summary>
+	/// 取场景里的控件并接线（【项目约定】禁止动态生成节点）。
+	///
+	/// 控件树在 <c>scenes/editor/CardEditorPage.tscn</c> 里，
+	/// <c>Preview</c> 节点挂的是 <see cref="CardPreview"/> 脚本。
+	///
+	/// <b>两处仍然是运行期建的：</b>卡池列表的每一行（卡池里有几张是运行期数据）、
+	/// 以及卡面字段的每一行（字段是 <c>List&lt;CardField&gt;</c>，随数据增删）。
+	/// 这两类属于"按数据生成"，与"结构上固定的控件"不同。
+	///
+	/// <b>版式那几个数字框的 min/max/step/初值写在场景里</b>（原先散在
+	/// <c>AddSpin(…)</c> 的实参里，比如 8/120/34、0/0.25/0.01）——
+	/// 那些是"这一格能填什么"，属于结构。
+	/// </summary>
+	internal override void Initialize()
 	{
-		var row = new HBoxContainer();
-		row.AddThemeConstantOverride("separation", 10);
-		row.SetAnchorsPreset(LayoutPreset.FullRect);
-		AddChild(row);
+		_list = GetNode<VBoxContainer>("Row/Left/ListScroll/CardList");
+		_newButton = GetNode<Button>("Row/Left/CardActions/NewCardButton");
+		_duplicateButton = GetNode<Button>("Row/Left/CardActions/DuplicateCardButton");
+		_deleteButton = GetNode<Button>("Row/Left/CardActions/DeleteCardButton");
+		_preview = GetNode<CardPreview>("Row/Right/Preview");
 
-		// ---- 左：卡池 ----
-		var left = new VBoxContainer { CustomMinimumSize = new Vector2(260f, 0f) };
-		left.AddThemeConstantOverride("separation", 6);
-		row.AddChild(left);
-
-		left.AddChild(new Label { Text = "卡池" });
-
-		// <b>新建 / 复制 / 删除这一排是 M5.5 第 2 条补上的。</b>
-		//
-		// 服务层（<c>CardDefinitionService.CreateCard</c> / <c>DeleteCard</c>）
-		// 从 M5 起就在，自检也一直在用它们 —— <b>缺的只有入口</b>。
-		// 而用户报的是"根本没有新建、删除卡牌的功能"，这说明了一件事：
-		// <b>入口不可发现与功能不存在，在体感上没有区别。</b>
-		// （同一个模式在"区域不能删除"那条上也出现过一次，那里的删除按钮
-		//   藏在页面左下角，用户同样没找到。）
-		var actions = new HBoxContainer { Name = "CardActions" };
-		actions.AddThemeConstantOverride("separation", 4);
-		left.AddChild(actions);
-
-		_newButton = new Button { Text = "新建卡牌", Name = "NewCardButton" };
 		_newButton.Pressed += OnNewPressed;
-		actions.AddChild(_newButton);
-
-		_duplicateButton = new Button { Text = "复制这张", Name = "DuplicateCardButton" };
 		_duplicateButton.Pressed += OnDuplicatePressed;
-		actions.AddChild(_duplicateButton);
-
-		_deleteButton = new Button { Text = "删除这张", Name = "DeleteCardButton" };
 		_deleteButton.Pressed += OnDeletePressed;
-		actions.AddChild(_deleteButton);
 
-		var scroll = new ScrollContainer
-		{
-			SizeFlagsVertical = SizeFlags.ExpandFill,
-			HorizontalScrollMode = ScrollContainer.ScrollMode.Disabled,
-		};
-		left.AddChild(scroll);
+		const string Form = "Row/Right/FormScroll/CardForm";
 
-		_list = new VBoxContainer { Name = "CardList", SizeFlagsHorizontal = SizeFlags.ExpandFill };
-		_list.AddThemeConstantOverride("separation", 2);
-		scroll.AddChild(_list);
+		_nameEdit = GetNode<LineEdit>($"{Form}/NameRow/NameEdit");
+		_faceImage = GetNode<OptionButton>($"{Form}/FaceImageRow/FaceImage");
+		_backImage = GetNode<OptionButton>($"{Form}/BackImageRow/BackImage");
+		_importHint = GetNode<Label>($"{Form}/ImportRow/ImportHint");
+		_faceTint = GetNode<ColorPickerButton>($"{Form}/ColorRow/FaceTint");
+		_backTint = GetNode<ColorPickerButton>($"{Form}/ColorRow/BackTint");
+		_borderColor = GetNode<ColorPickerButton>($"{Form}/ColorRow/BorderColor");
 
-		// ---- 右：预览 + 编辑表单 ----
-		var right = new VBoxContainer { SizeFlagsHorizontal = SizeFlags.ExpandFill };
-		right.AddThemeConstantOverride("separation", 6);
-		row.AddChild(right);
+		_fieldRows = GetNode<VBoxContainer>($"{Form}/FieldRows");
+		_fieldHint = GetNode<Label>($"{Form}/FieldsHeader/FieldHint");
 
-		_preview = new CardPreview
-		{
-			Name = "Preview",
+		_titleFontSize = GetNode<SpinBox>($"{Form}/Row1/TitleFontSize");
+		_fieldFontSize = GetNode<SpinBox>($"{Form}/Row1/FieldFontSize");
+		_descriptionFontSize = GetNode<SpinBox>($"{Form}/Row1/DescriptionFontSize");
+		_padding = GetNode<SpinBox>($"{Form}/Row2/Padding");
+		_cornerRadius = GetNode<SpinBox>($"{Form}/Row2/CornerRadius");
+		_templateBorder = GetNode<SpinBox>($"{Form}/Row2/TemplateBorder");
+		_shadowSize = GetNode<SpinBox>($"{Form}/Row3/ShadowSize");
+		_shadowX = GetNode<SpinBox>($"{Form}/Row3/ShadowX");
+		_shadowY = GetNode<SpinBox>($"{Form}/Row3/ShadowY");
+		_titleColor = GetNode<ColorPickerButton>($"{Form}/TemplateColorRow/TitleColor");
+		_fieldColor = GetNode<ColorPickerButton>($"{Form}/TemplateColorRow/FieldColor");
+		_descriptionColor = GetNode<ColorPickerButton>($"{Form}/TemplateColorRow/DescriptionColor");
+		_useNameAsTitle = GetNode<CheckBox>($"{Form}/Row4/UseNameAsTitle");
 
-			// <b>宽度必须显式给。</b>它是 <c>VBoxContainer</c> 的子节点，而下面的
-			// 表单滚动区设了 <c>SizeFlagsVertical = ExpandFill</c> ——
-			// 于是垂直方向由表单吃掉，预览控件只拿到"最小宽度"，而它的最小宽度是 0。
-			//
-			// 症状是<b>预览框整个不画</b>（<c>_Draw</c> 一次都没被调用，
-			// 因为 Godot 会跳过零尺寸的控件），而面板、页签、卡池列表全都正常。
-			// 自检靠像素判据 + `_Draw` 计数器抓到的：`preview_draw_count = 0`。
-			// **"控件存在"与"控件画了东西"是两件事。**
-			CustomMinimumSize = new Vector2(420f, 260f),
-		};
-
-		right.AddChild(_preview);
-
-		var formScroll = new ScrollContainer
-		{
-			SizeFlagsVertical = SizeFlags.ExpandFill,
-			HorizontalScrollMode = ScrollContainer.ScrollMode.Disabled,
-		};
-		right.AddChild(formScroll);
-
-		_form = new VBoxContainer { Name = "CardForm", SizeFlagsHorizontal = SizeFlags.ExpandFill };
-		_form.AddThemeConstantOverride("separation", 8);
-		formScroll.AddChild(_form);
-
-		BuildBasicSection(_form);
-
-		_fieldRows = new VBoxContainer { Name = "FieldRows", SizeFlagsHorizontal = SizeFlags.ExpandFill };
-		_fieldRows.AddThemeConstantOverride("separation", 4);
-		BuildFieldsSection(_form, _fieldRows);
-
-		BuildTemplateSection(_form);
-	}
-
-	// ------------------------------------------------------------------ 表单：基本
-
-	private void BuildBasicSection(Control parent)
-	{
-		parent.AddChild(new Label { Text = "── 基本 ──" });
-
-		_nameEdit = AddTextRow(parent, "名称", t =>
+		// 名称走"提交才算数"（回车 / 失焦）
+		SubscribeText(_nameEdit, t =>
 		{
 			string trimmed = t.Trim();
 			if (trimmed.Length > 0)
 				Mutate(d => d.DisplayName = trimmed);
 		});
 
-		// 底图 / 卡背：从存档 images/ 里选，加一个导入按钮。
-		_faceImage = AddImageRow(parent, "底图", file => Mutate(d => d.FaceImage = file));
-		_backImage = AddImageRow(parent, "卡背", file => Mutate(d => d.BackImage = file));
+		// 两个图片下拉：回填期间要早退（见 _suppressCallbacks 的说明）。
+		SubscribeImage(_faceImage, file => Mutate(d => d.FaceImage = file));
+		SubscribeImage(_backImage, file => Mutate(d => d.BackImage = file));
 
-		var importRow = new HBoxContainer();
-		importRow.AddThemeConstantOverride("separation", 8);
-		parent.AddChild(importRow);
-
-		var importButton = new Button { Text = "导入图片…" };
-		importButton.Pressed += OpenImportDialog;
-		importRow.AddChild(importButton);
-
-		_importHint = new Label { Text = "" };
-		importRow.AddChild(_importHint);
-
-		var colorRow = new HBoxContainer();
-		colorRow.AddThemeConstantOverride("separation", 8);
-		parent.AddChild(colorRow);
-
-		colorRow.AddChild(new Label { Text = "底色：" });
-		_faceTint = new ColorPickerButton { CustomMinimumSize = new Vector2(110f, 26f) };
+		GetNode<Button>($"{Form}/ImportRow/ImportButton").Pressed += OpenImportDialog;
 		_faceTint.ColorChanged += c => Mutate(d => d.FaceTint = c);
-		colorRow.AddChild(_faceTint);
-
-		colorRow.AddChild(new Label { Text = "卡背色：" });
-		_backTint = new ColorPickerButton { CustomMinimumSize = new Vector2(110f, 26f) };
 		_backTint.ColorChanged += c => Mutate(d => d.BackTint = c);
-		colorRow.AddChild(_backTint);
-
-		colorRow.AddChild(new Label { Text = "边框：" });
-		_borderColor = new ColorPickerButton { CustomMinimumSize = new Vector2(110f, 26f) };
 		_borderColor.ColorChanged += c => Mutate(d => d.BorderColor = c);
-		colorRow.AddChild(_borderColor);
-	}
 
-	// ------------------------------------------------------------------ 表单：字段
+		GetNode<Button>($"{Form}/FieldsHeader/AddFieldButton").Pressed += OnAddFieldPressed;
 
-	private void BuildFieldsSection(Control parent, VBoxContainer rows)
-	{
-		var header = new HBoxContainer();
-		header.AddThemeConstantOverride("separation", 8);
-		parent.AddChild(header);
-
-		header.AddChild(new Label { Text = "── 卡面字段 ──" });
-
-		var add = new Button { Text = "加一个字段" };
-		add.Pressed += OnAddFieldPressed;
-		header.AddChild(add);
-
-		_fieldHint = new Label { Text = "" };
-		header.AddChild(_fieldHint);
-
-		parent.AddChild(rows);
-	}
-
-	// ------------------------------------------------------------------ 表单：模板
-
-	private void BuildTemplateSection(Control parent)
-	{
-		parent.AddChild(new Label { Text = "── 版式（这套参数可以整副牌共用）──" });
-
-		var row1 = new HBoxContainer();
-		row1.AddThemeConstantOverride("separation", 8);
-		parent.AddChild(row1);
-
-		row1.AddChild(new Label { Text = "卡名字号：" });
-		_titleFontSize = AddSpin(row1, 8, 120, 34, v => Mutate(d => d.Template.TitleFontSize = (int)v));
-
-		row1.AddChild(new Label { Text = "字段字号：" });
-		_fieldFontSize = AddSpin(row1, 8, 120, 26, v => Mutate(d => d.Template.FieldFontSize = (int)v));
-
-		row1.AddChild(new Label { Text = "描述字号：" });
-		_descriptionFontSize = AddSpin(row1, 8, 120, 20, v => Mutate(d => d.Template.DescriptionFontSize = (int)v));
-
-		var row2 = new HBoxContainer();
-		row2.AddThemeConstantOverride("separation", 8);
-		parent.AddChild(row2);
-
-		row2.AddChild(new Label { Text = "内边距：" });
-		_padding = AddSpin(row2, 0, 0.25, 0.01, v => Mutate(d => d.Template.Padding = (float)v), 2);
-
-		row2.AddChild(new Label { Text = "圆角：" });
-		_cornerRadius = AddSpin(row2, 0, 80, 1, v => Mutate(d => d.Template.CornerRadius = (float)v));
-
-		row2.AddChild(new Label { Text = "边框宽：" });
-		_templateBorder = AddSpin(row2, 0, 20, 1, v => Mutate(d => d.Template.BorderWidth = (float)v));
-
-		var row3 = new HBoxContainer();
-		row3.AddThemeConstantOverride("separation", 8);
-		parent.AddChild(row3);
-
-		row3.AddChild(new Label { Text = "投影大小：" });
-		_shadowSize = AddSpin(row3, 0, 40, 1, v => Mutate(d => d.Template.ShadowSize = (int)v));
-
-		row3.AddChild(new Label { Text = "投影偏移 X：" });
-		_shadowX = AddSpin(row3, -30, 30, 1, v =>
+		SubscribeSpin(_titleFontSize, v => Mutate(d => d.Template.TitleFontSize = (int)v));
+		SubscribeSpin(_fieldFontSize, v => Mutate(d => d.Template.FieldFontSize = (int)v));
+		SubscribeSpin(_descriptionFontSize, v => Mutate(d => d.Template.DescriptionFontSize = (int)v));
+		SubscribeSpin(_padding, v => Mutate(d => d.Template.Padding = (float)v));
+		SubscribeSpin(_cornerRadius, v => Mutate(d => d.Template.CornerRadius = (float)v));
+		SubscribeSpin(_templateBorder, v => Mutate(d => d.Template.BorderWidth = (float)v));
+		SubscribeSpin(_shadowSize, v => Mutate(d => d.Template.ShadowSize = (int)v));
+		SubscribeSpin(_shadowX, v =>
 			Mutate(d => d.Template.ShadowOffset = new Vector2((float)v, d.Template.ShadowOffset.Y)));
-
-		row3.AddChild(new Label { Text = "Y：" });
-		_shadowY = AddSpin(row3, -30, 30, 1, v =>
+		SubscribeSpin(_shadowY, v =>
 			Mutate(d => d.Template.ShadowOffset = new Vector2(d.Template.ShadowOffset.X, (float)v)));
 
-		var colorRow = new HBoxContainer();
-		colorRow.AddThemeConstantOverride("separation", 8);
-		parent.AddChild(colorRow);
-
-		colorRow.AddChild(new Label { Text = "卡名色：" });
-		_titleColor = new ColorPickerButton { CustomMinimumSize = new Vector2(110f, 26f) };
 		_titleColor.ColorChanged += c => Mutate(d => d.Template.TitleColor = c);
-		colorRow.AddChild(_titleColor);
-
-		colorRow.AddChild(new Label { Text = "字段色：" });
-		_fieldColor = new ColorPickerButton { CustomMinimumSize = new Vector2(110f, 26f) };
 		_fieldColor.ColorChanged += c => Mutate(d => d.Template.FieldColor = c);
-		colorRow.AddChild(_fieldColor);
-
-		colorRow.AddChild(new Label { Text = "描述色：" });
-		_descriptionColor = new ColorPickerButton { CustomMinimumSize = new Vector2(110f, 26f) };
 		_descriptionColor.ColorChanged += c => Mutate(d => d.Template.DescriptionColor = c);
-		colorRow.AddChild(_descriptionColor);
-
-		var row4 = new HBoxContainer();
-		row4.AddThemeConstantOverride("separation", 8);
-		parent.AddChild(row4);
-
-		_useNameAsTitle = new CheckBox { Text = "没写「卡名」字段时用卡名顶替" };
 		_useNameAsTitle.Toggled += on => Mutate(d => d.Template.UseDisplayNameAsTitle = on);
-		row4.AddChild(_useNameAsTitle);
+		GetNode<Button>($"{Form}/Row4/ResetTemplateButton").Pressed += OnInitTemplatePressed;
+	}
 
-		var reset = new Button { Text = "版式恢复默认" };
-		reset.Pressed += OnInitTemplatePressed;
-		row4.AddChild(reset);
+	/// <summary>把一个"提交才算数"的输入框接上回调（回车 / 失焦两条都算提交）。</summary>
+	private static void SubscribeText(LineEdit edit, System.Action<string> onSubmit)
+	{
+		edit.TextSubmitted += t => onSubmit(t);
+		edit.FocusExited += () => onSubmit(edit.Text);
+	}
+
+	/// <summary>图片下拉：回填期间不许把值写回定义（理由见 <see cref="_suppressCallbacks"/>）。</summary>
+	private void SubscribeImage(OptionButton picker, System.Action<string> onPicked)
+	{
+		picker.ItemSelected += idx =>
+		{
+			if (_suppressCallbacks)
+				return;
+
+			onPicked(picker.GetItemMetadata((int)idx).AsString());
+		};
+	}
+
+	/// <summary>数字框：回填期间不许把值写回定义（SpinBox 被重写会连带重排、抢走焦点）。</summary>
+	private void SubscribeSpin(SpinBox spin, System.Action<double> onChanged)
+	{
+		spin.ValueChanged += v =>
+		{
+			if (!_suppressCallbacks)
+				onChanged(v);
+		};
 	}
 
 	public override void OnShown() => RefreshList();
@@ -819,71 +700,6 @@ public partial class CardEditorPage : EditorPage
 	/// 于是旧卡的值被写进新卡。这类 bug 只在"连着点两张卡"时出现，肉眼极难归因。
 	/// </summary>
 	private bool _suppressCallbacks;
-
-	// ------------------------------------------------------------------ 控件工厂
-
-	private LineEdit AddTextRow(Control parent, string label, System.Action<string> onSubmit)
-	{
-		var row = new HBoxContainer();
-		row.AddThemeConstantOverride("separation", 8);
-		parent.AddChild(row);
-		row.AddChild(new Label { Text = $"{label}：" });
-
-		var edit = new LineEdit
-		{
-			SizeFlagsHorizontal = SizeFlags.ExpandFill,
-			CustomMinimumSize = new Vector2(200f, 0f),
-		};
-
-		edit.TextSubmitted += t => onSubmit(t);
-		edit.FocusExited += () => onSubmit(edit.Text);
-		row.AddChild(edit);
-		return edit;
-	}
-
-	private OptionButton AddImageRow(Control parent, string label, System.Action<string> onPicked)
-	{
-		var row = new HBoxContainer();
-		row.AddThemeConstantOverride("separation", 8);
-		parent.AddChild(row);
-		row.AddChild(new Label { Text = $"{label}：" });
-
-		var picker = new OptionButton { CustomMinimumSize = new Vector2(260f, 0f), SizeFlagsHorizontal = SizeFlags.ExpandFill };
-		picker.ItemSelected += idx =>
-		{
-			if (_suppressCallbacks)
-				return;
-
-			onPicked(picker.GetItemMetadata((int)idx).AsString());
-		};
-
-		row.AddChild(picker);
-		return picker;
-	}
-
-	/// <summary>只放一个数字框（不自带标签 —— 版式那一区块要几个框挤在一行）。</summary>
-	private SpinBox AddSpin(
-		Control parent, double min, double max, double initial, System.Action<double> onChanged, int decimals = 0)
-	{
-		var spin = new SpinBox
-		{
-			MinValue = min,
-			MaxValue = max,
-			Step = decimals > 0 ? 0.01 : 1,
-			Value = initial,
-			CustomMinimumSize = new Vector2(decimals > 0 ? 80f : 70f, 0f),
-			Rounded = decimals == 0,
-		};
-
-		spin.ValueChanged += v =>
-		{
-			if (!_suppressCallbacks)
-				onChanged(v);
-		};
-
-		parent.AddChild(spin);
-		return spin;
-	}
 
 	// ------------------------------------------------------------------ 改定义
 
