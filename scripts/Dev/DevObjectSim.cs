@@ -43,13 +43,18 @@ internal static class DevObjectSim
 		// 各步骤互相影响，所以每步都用"按当前状态重新挑目标"的方式，
 		// 而不是一开始抓引用 —— 拖拽之后位置就变了。
 		await DragToEmptyArea(host, cam, objects, zones, r);
-		await RotateAndFlip(host, cam, objects, r);
+		await RotateAndFlip(host, cam, vc, objects, r);
 		await FormPile(host, cam, objects, r);
 		await BoxSelect(host, cam, objects, zones, r);
 		await RollDice(host, cam, objects, r);
 
 		r["object_count_after"] = objects.ObjectCount;
-		r["pass"] = AsBool(r, "drag_ok") && AsBool(r, "rotate_ok") && AsBool(r, "flip_ok")
+
+		// 拖拽那一步若因"屏幕上找不到干净落点"跳过，就不算这一节失败 ——
+		// 否则一次环境问题会被读成产品问题（本项目最忌讳的"测试说谎"）。
+		bool dragPartOk = AsBool(r, "drag_ok") || AsBool(r, "drag_skipped");
+
+		r["pass"] = dragPartOk && AsBool(r, "rotate_ok") && AsBool(r, "flip_ok")
 			&& AsBool(r, "pile_ok") && AsBool(r, "box_select_ok") && AsBool(r, "dice_ok");
 
 		return r;
@@ -69,8 +74,19 @@ internal static class DevObjectSim
 			return;
 		}
 
-		(Vector2 emptyScreen, float clearance) = DevInputSim.FindEmptiestScreenPoint(cam, objects, zones);
-		Vector2 target = cam.ScreenToWorld(emptyScreen);
+		(Vector2? emptyScreen, float clearance, int candidates) =
+			DevInputSim.FindEmptiestScreenPoint(cam, objects, zones, DevInputSim.FindBoard(host));
+
+		// 找不到干净落点 = 没条件跑，不是产品坏了。按项目约定报成"跳过"。
+		if (emptyScreen is not Vector2 emptyPoint)
+		{
+			r["drag_ok"] = false;
+			r["drag_skipped"] = true;
+			r["drag_note"] = $"屏幕上没有既无物件、又不被 HUD 压住的落点（候选 {candidates} 个）—— 跳过拖拽判定";
+			return;
+		}
+
+		Vector2 target = cam.ScreenToWorld(emptyPoint);
 
 		// 把"这个落点到底有多空"写进报告。它是这条断言的可信度依据：
 		// 间隙接近 0 就说明落点其实贴着别的物件，"位移精确等于鼠标位移"即使通过也说明不了什么。
@@ -101,7 +117,8 @@ internal static class DevObjectSim
 
 	// ------------------------------------------------------------------ 2. 旋转 / 翻面
 
-	private static async Task RotateAndFlip(Node host, BoardCamera cam, ObjectManager objects, Godot.Collections.Dictionary r)
+	private static async Task RotateAndFlip(
+		Node host, BoardCamera cam, ViewportController vc, ObjectManager objects, Godot.Collections.Dictionary r)
 	{
 		CardObject? card = FindLooseCard(objects, cam);
 		if (card is null)
@@ -125,10 +142,22 @@ internal static class DevObjectSim
 		r["rotate_ok"] = Mathf.Abs((after - before) - GameConfig.KeyRotateStepDegrees) < 0.01f;
 
 		bool faceBefore = card.IsFaceDown;
+
+		// 按下 F 之前先记一笔"到目前为止有多少个键走到了输入路由"。
+		//
+		// 这是一个只读计数器（<c>ViewportController.KeyEvents</c>），存在的理由很具体：
+		// 这一条曾经时红时绿 —— 同一个二进制、同一段代码，一次 <c>flip_ok=true</c>、
+		// 一次 <c>false</c>，而报告里只有一行 false，看不出到底是
+		// <b>键没送到输入路由</b>还是<b>送到了、但目标集是空的</b>。
+		// 现在两种情况在报告里长得完全不一样：前者 <c>flip_key_reached_router=false</c>，
+		// 后者为 true 而 <c>rotation_delta</c> 照样正确。
+		int keysBefore = vc.KeyEvents;
+
 		DevInputSim.PushKey(Key.F);
 		await DevInputSim.Frame(host);
 		await DevInputSim.Frame(host);
 
+		r["flip_key_reached_router"] = vc.KeyEvents > keysBefore;
 		r["face_down_before"] = faceBefore;
 		r["face_down_after"] = card.IsFaceDown;
 		r["flip_ok"] = card.IsFaceDown != faceBefore;

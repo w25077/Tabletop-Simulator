@@ -47,12 +47,16 @@ internal static class DevSequenceSim
 		// 注意键名要和下面各行实际写入的一致 —— 之前这里写的是 duplicate_ok
 		// 而 SelectAllThenDuplicate 写的是 dup_ok，于是聚合判定永远 false，
 		// 明明五项子断言全绿却报失败。
-		r["pass"] = AsBool(r, "click_then_box_ok")
+		//
+		// 另外：可能因"屏幕上找不到干净落点"而跳过的子项，在下面用 NotFailed 判 ——
+		// 那条路会把该键的 false 当作"跳过"忽略掉。跳过是"没条件跑"，
+		// 不该把整节判成失败（详见各处 *_skipped 的写法）。
+		r["pass"] = NotFailed(r, "click_then_box_ok")
 			&& AsBool(r, "hover_target_ok")
-			&& AsBool(r, "hover_off_ok")
+			&& NotFailed(r, "hover_off_ok")
 			&& AsBool(r, "menu_ok")
 			&& AsBool(r, "menu_edge_ok")
-			&& AsBool(r, "shift_extract_ok")
+			&& NotFailed(r, "shift_extract_ok")
 			&& AsBool(r, "pile_drag_ok")
 			&& AsBool(r, "dup_ok");
 
@@ -94,7 +98,7 @@ internal static class DevSequenceSim
 		Vector2? startOpt = DevInputSim.FindEmptyScreenPointNear(cam, objects, cardPos, 420f, zones);
 		if (startOpt is null)
 		{
-			r["click_then_box_ok"] = false;
+			r["click_then_box_skipped"] = true;
 			r["click_then_box_note"] = "找不到空白起点";
 			return;
 		}
@@ -206,7 +210,15 @@ internal static class DevSequenceSim
 		bool faceBefore = card.IsFaceDown;
 
 		// 2) 鼠标移到空白处（只移动，不点击）
-		Vector2 empty = DevInputSim.FindEmptyScreenPoint(cam, objects, zones);
+		Vector2? emptyOpt = DevInputSim.FindEmptyScreenPoint(cam, objects, zones, DevInputSim.FindBoard(host));
+
+		if (emptyOpt is not Vector2 empty)
+		{
+			r["hover_off_skipped"] = true;
+			r["hover_off_note"] = "屏幕上没有既无物件、又不被 HUD 压住的点 —— 跳过这条判定";
+			return;
+		}
+
 		DevInputSim.PushMotion(empty, empty - cardScreen);
 		await DevInputSim.Frame(host);
 		await DevInputSim.Frame(host);
@@ -389,7 +401,15 @@ internal static class DevSequenceSim
 		}
 
 		Vector2 start = cam.WorldToScreen(top.Position);
-		Vector2 empty = DevInputSim.FindEmptyScreenPoint(cam, objects, zones);
+		Vector2? emptyOpt = DevInputSim.FindEmptyScreenPoint(cam, objects, zones, DevInputSim.FindBoard(host));
+
+		if (emptyOpt is not Vector2 empty)
+		{
+			r["shift_extract_skipped"] = true;
+			r["shift_extract_note"] = "屏幕上没有既无物件、又不被 HUD 压住的落点 —— 跳过这条判定";
+			return;
+		}
+
 		Vector2 screenDelta = empty - start;
 		Vector2 emptyWorld = cam.ScreenToWorld(empty);
 
@@ -550,6 +570,20 @@ internal static class DevSequenceSim
 
 	private static bool AsBool(Godot.Collections.Dictionary dict, string key)
 		=> dict.ContainsKey(key) && dict[key].AsBool();
+
+	/// <summary>
+	/// "这条子项没有失败" —— 用于可能被跳过的子项。
+	///
+	/// 与 <see cref="AsBool"/> 的区别只在一种情况：该子项写了
+	/// <c>&lt;key&gt;_ok = false</c> <b>并且</b> <c>&lt;key&gt;_skipped = true</c>。
+	/// 那时它报的是"没条件跑"（例如屏幕上找不到既无物件、又不被 HUD 压住的落点），
+	/// 不该把整节判成失败；其余情况一律按 <c>_ok</c> 的真假判。
+	///
+	/// 之所以要区分：把"跳过"写成 <c>true</c> 是谎报通过，
+	/// 写成 <c>false</c> 是把环境问题读成产品问题 —— 两条都是"测试说谎"。
+	/// </summary>
+	private static bool NotFailed(Godot.Collections.Dictionary dict, string key)
+		=> !dict.ContainsKey(key) || dict[key].AsBool() || AsBool(dict, key + "_skipped");
 
 	private static Godot.Collections.Array Vec2(Vector2 v) => new() { v.X, v.Y };
 }

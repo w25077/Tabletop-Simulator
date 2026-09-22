@@ -136,6 +136,7 @@ public partial class ViewportController : Node
 				HandleMouseMotion(mm);
 				break;
 			case InputEventKey k when k.Pressed && !k.Echo:
+				KeyEvents++;
 				HandleKey(k);
 				break;
 		}
@@ -151,6 +152,18 @@ public partial class ViewportController : Node
 	/// 而"面板关着的时候会不会挡住桌面右边那一竖条的点击"恰恰只有空白点击能验。
 	/// </summary>
 	public int MouseButtonEvents { get; private set; }
+
+	/// <summary>
+	/// 收到过多少次<b>键盘按下</b>事件（自检用）。与 <see cref="MouseButtonEvents"/> 同一套路。
+	///
+	/// 为什么需要它：有一条断言时红时绿——"按 E 能转、按 F 不翻"，而两次跑的是同一个二进制、
+	/// 同一段代码。报告里只有 <c>flip_ok = false</c>，看不出到底是
+	/// <b>键没送到输入路由</b>还是<b>送到了但目标集是空的</b>。
+	/// 有了这个计数器，两种情况的报告长得完全不一样，不必再靠推测。
+	///
+	/// 只读、不改变任何行为，符合本项目"探针与诊断不许改变被测对象的可观测状态"。
+	/// </summary>
+	public int KeyEvents { get; private set; }
 
 	private void HandleMouseButton(InputEventMouseButton mb)
 	{

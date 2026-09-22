@@ -1,3 +1,4 @@
+using System.Collections.Generic;
 using System.Threading.Tasks;
 using Godot;
 using TabletopSimulator.Core;
@@ -17,6 +18,22 @@ internal static class DevInputSim
 {
 	internal static async Task Frame(Node host) =>
 		await host.ToSignal(host.GetTree(), SceneTree.SignalName.ProcessFrame);
+
+	/// <summary>
+	/// 取 <see cref="Board"/>（桌面）。
+	///
+	/// <b>从 <c>host</c> 的父节点取，不是从场景根取</b> —— 实测踩过一次：
+	/// <c>host</c> 是 <c>DevCapture</c>，它是 <c>Main</c> 的<b>子节点</b>，
+	/// 而 <c>Board</c> 是它的<b>兄弟</b>；从 <c>SceneTree.Root</c> 找 <c>"Board"</c>
+	/// 只会命中 Main 自己，于是永远取不到（症状是选点又跑回了桌外，
+	/// 而报告里只写着"选点变了"，看不出是这里取不到东西）。
+	///
+	/// 先试父节点，再退到场景根 —— 两种挂法都认，且拿到的都是同一个对象，
+	/// 不存在第二份几何。
+	/// </summary>
+	internal static Board? FindBoard(Node host)
+		=> host.GetParent()?.GetNodeOrNull<Board>("Board")
+			?? host.GetTree()?.CurrentScene?.GetNodeOrNull<Board>("Board");
 
 	internal static void PushButton(Vector2 pos, MouseButton button, bool pressed)
 	{
@@ -200,47 +217,406 @@ internal static class DevInputSim
 	///
 	/// 代价是一次约 3000 个候选点的扫描，每个候选要问一遍拾取与包围盒 ——
 	/// 对 36 个物件的桌面是毫秒级，完全可接受。
+	///
+	/// <b>第二次修订（同一类问题的第二种长相）：探针还得避开 HUD。</b>
+	/// 第一版只问了"世界里有没有东西"，而对"屏幕上这块地方被顶栏压着"一无所知 ——
+	/// 于是它把最空点选在了顶栏下沿 16px 处的一个角上。那个位置正好落在控件的
+	/// 命中边缘：同一个二进制、同一个坐标，这一次点得到、下一次点不到。
+	/// 症状是 <c>input_simulation</c> / <c>object_simulation</c> / <c>zone_simulation</c>
+	/// 三节时红时绿，而产品完全正常。
+	///
+	/// 处置：候选点先过一遍 <see cref="CollectBlockingControlRects"/>（控件真实几何），
+	/// 排序时再优先选"离 UI 更远"的那个；一个候选都找不到就返回 <c>null</c>，
+	/// 由调用方按"没条件跑"跳过 —— <b>不猜</b>。
 	/// </summary>
-	internal static (Vector2 Screen, float Clearance) FindEmptiestScreenPoint(
-		BoardCamera cam, ObjectManager objects, ZoneManager? zones = null)
+	internal static (Vector2? Screen, float Clearance, int Candidates) FindEmptiestScreenPoint(
+		BoardCamera cam, ObjectManager objects, ZoneManager? zones = null, Board? board = null)
 	{
 		Vector2 viewport = cam.GetViewportRect().Size;
 
-		// 避开顶栏与底部提示条 —— 那些地方会被 HUD 控件吃掉
-		const float MarginTop = 60f;
-		const float MarginBottom = 118f;
-		const float MarginSide = 24f;
-		const float Step = 24f;
+		// 只留一圈贴边的保险，剩下的交给<b>真实几何</b>去判。
+		//
+		// 这里曾经写死的是 MarginTop = 60 / MarginBottom = 118。
+		// 那两个数字是"照当时 HUD 的高度估的"，而估出来的边距会有两个下场：
+		// <list type="number">
+		// <item>HUD 长高了 → 落点跑进控件里，点击被吃掉，报一条<b>与产品毫无关系</b>的红；</item>
+		// <item>落点正好落在控件的命中边缘 → 同一个二进制、同一个坐标，
+		//   这一次点得到、下一次点不到（实测 y=60 距顶栏下沿只有 16px 时就发生过）。</item>
+		// </list>
+		// 两种都是"测试说谎"。现在改成 <see cref="CollectBlockingControlRects"/>
+		// 每帧读控件真实矩形，边距不再承担任何"猜 HUD 多高"的职责。
+		const float SafetyInset = 8f;
+		const float Step = 16f;
 
-		Vector2 best = new(viewport.X * 0.5f, viewport.Y * 0.5f);
+		List<Rect2> bands = BuildBlockerBands(cam, viewport);
+
+		// 搜索范围取<b>桌面矩形在屏幕上的那块</b>（与视口保险带求交）。
+		//
+		// <b>为什么必须限定在桌面上（这一轮实测抓到的坑）：</b>
+		// 只在"整个视口"里找，答案永远是<b>桌外</b> ——
+		// 桌面上摆着几十个物件，而桌外一片空白。于是落点跑到 (3418, 1038) 这种地方，
+		// 而"把 10 张牌拖到空地堆成一摞"这类断言要求落点<b>还在桌上</b>，
+		// 当场变红（multi_formed_one_pile / multi_pile_forms_at_drop_point）。
+		//
+		// 语义上也该如此：探针要的是"桌上一块没被占用的地方"，
+		// 不是"屏幕上一块什么也没有的地方"。
+		Rect2 search = new(new Vector2(SafetyInset, SafetyInset), viewport - (Vector2.One * SafetyInset * 2f));
+
+		if (board is not null)
+		{
+			Rect2 limited = WorldRectToScreen(cam, board.BoardRect).Intersection(search);
+			if (limited.Size.X > Step && limited.Size.Y > Step)
+				search = limited;
+		}
+
+		// 判据：<b>离搜索区中心最近的可用点</b>。
+		//
+		// 这一条换过四版，值得把三次弯路写下来 —— 它们都是"断言照样绿/照样红，
+		// 而落点早就选歪了、报告里看不出来"：
+		// <list type="number">
+		// <item>"世界间隙最大" → 选到<b>桌外</b>（桌外最空）；</item>
+		// <item>加一把"离 UI 带边越远越好"的尺子 → 选到<b>桌面右下角</b>；
+		//   两把尺子方向不同，会互相打架 —— 这是"叠第二把尺子"的通病。</item>
+		// <item>"离任何物件/区域最远"（maximin）→ 选到<b>桌面右上角</b>，
+		//   因为角落天然离物件网格最远。断言随之稳定地红。</item>
+		// </list>
+		//
+		// "离中心最近"没有偏好角落的毛病：它落在桌面中间那块最宽敞的地方，
+		// 而"可用"这个条件已经保证了不压物件、不压区域、不被 HUD 吃掉。
+		Vector2 center = search.GetCenter();
+		var best = center;
+		float bestScore = float.MaxValue;
 		float bestClearance = -1f;
 		int candidates = 0;
 
-		for (float y = MarginTop; y <= viewport.Y - MarginBottom; y += Step)
+		for (float y = search.Position.Y; y <= search.End.Y; y += Step)
 		{
-			for (float x = MarginSide; x <= viewport.X - MarginSide; x += Step)
+			for (float x = search.Position.X; x <= search.End.X; x += Step)
 			{
 				var screen = new Vector2(x, y);
+
+				// ① 屏幕上不能被任何"会吃鼠标的控件"压住 —— 这是本次修复的核心
+				if (IsScreenPointBlockedByControl(bands, screen, 0f))
+					continue;
+
 				Vector2 world = cam.ScreenToWorld(screen);
 
+				// ② 世界里不能有物件
 				if (objects.PickTopmost(world) is not null)
 					continue;
 
+				// ③ 也不能落在区域矩形里（区域会把它接走，断言就变成在测别的东西）
 				if (zones is not null && zones.ZoneAtWorld(world) is not null)
 					continue;
 
 				candidates++;
 
-				float clearance = ClearanceToNearestObject(objects, world);
-				if (clearance > bestClearance)
-				{
-					bestClearance = clearance;
+				float score = screen.DistanceTo(center);
+				if (score < bestScore)
+				{					bestScore = score;
+					bestClearance = ClearanceToNearestObject(objects, world);
 					best = screen;
 				}
 			}
 		}
 
-		return (best, candidates > 0 ? Mathf.Max(bestClearance, 0f) : -1f);
+		// 一个合格候选都没有 = "桌上没有一块可用的空地"。返回 null 让调用方跳过，
+		// <b>不要</b>退回一个中间点当兜底 —— 那正是"猜一个坐标"的老毛病。
+		return candidates > 0
+			? (best, Mathf.Max(bestClearance, 0f), candidates)
+			: (null, -1f, 0);
+	}
+
+	/// <summary>
+	/// 该世界点到"最近物件 / 最近区域矩形"的最小距离（越大越宽敞）。
+	///
+	/// 与 <see cref="ClearanceToNearestObject"/> 的区别：后者只算可见物件，
+	/// 而落点同样不该压在某个区域的矩形里（区域会把它接走，断言就变成在测别的东西）。
+	/// </summary>
+	private static float MinDistanceToObstacles(ObjectManager objects, ZoneManager? zones, Vector2 world)
+	{
+		float nearest = ClearanceToNearestObject(objects, world);
+
+		if (zones is not null)
+		{
+			foreach (Zone zone in zones.AllZones)
+			{
+				// 区域的世界矩形就是它的定义矩形（Zone 自己不再存一份）。
+				Rect2 rect = zone.Definition.Rect;
+				float dx = Mathf.Max(Mathf.Max(rect.Position.X - world.X, world.X - rect.End.X), 0f);
+				float dy = Mathf.Max(Mathf.Max(rect.Position.Y - world.Y, world.Y - rect.End.Y), 0f);
+				nearest = Mathf.Min(nearest, Mathf.Sqrt((dx * dx) + (dy * dy)));
+			}
+		}
+
+		return nearest;
+	}
+
+	/// <summary>
+	/// 描述一次选点用了什么范围（只读诊断）。
+	/// 存在的理由：这一轮连续踩了三个"看起来全绿、其实选点早就跑偏"的坑
+	/// （贴控件边缘 / 跑出桌面 / 跑出视口），而没有一次是报告自己能看出来的。
+	/// 现在把范围和结果一起写进报告，下次不必再靠反推。
+	/// </summary>
+	internal static Godot.Collections.Dictionary DescribeSearchArea(
+		BoardCamera cam, Board? board, Vector2? chosen)
+	{
+		Vector2 viewport = cam.GetViewportRect().Size;
+		var info = new Godot.Collections.Dictionary
+		{
+			["viewport"] = new Godot.Collections.Array { viewport.X, viewport.Y },
+		};
+
+		if (board is not null)
+		{
+			Rect2 boardScreen = WorldRectToScreen(cam, board.BoardRect);
+			info["board_world"] = new Godot.Collections.Array
+				{ board.BoardRect.Position.X, board.BoardRect.Position.Y, board.BoardRect.Size.X, board.BoardRect.Size.Y };
+			info["board_screen"] = new Godot.Collections.Array
+				{ boardScreen.Position.X, boardScreen.Position.Y, boardScreen.Size.X, boardScreen.Size.Y };
+
+			if (chosen is Vector2 point)
+			{
+				Vector2 world = cam.ScreenToWorld(point);
+				info["chosen_world"] = new Godot.Collections.Array { world.X, world.Y };
+				info["chosen_inside_board"] = board.BoardRect.HasPoint(world);
+			}
+		}
+		else
+		{
+			info["board"] = "(没取到 Board)";
+		}
+
+		return info;
+	}
+
+	/// <summary>
+	/// 把"避让依据"本身写进报告（只读，不改变任何行为）。
+	///
+	/// 为什么值得单独记：选点逻辑一旦悄悄失效（例如控件矩形的收集挂了），
+	/// 症状是"断言照样全绿，但落点又贴回了控件边缘"—— <b>全绿的报告看不出这件事</b>。
+	/// 这条诊断让"避让到底有没有生效"变成一个可以直接读的数，而不是靠推断。
+	/// </summary>
+	internal static Godot.Collections.Dictionary DescribeScreenBlockers(BoardCamera cam)
+	{
+		Vector2 viewportSize = cam.GetViewportRect().Size;
+		List<Rect2> raw = CollectBlockingControlRects(cam);
+		List<Rect2> bands = BuildBlockerBands(cam, viewportSize);
+
+		var rawList = new Godot.Collections.Array();
+		foreach (Rect2 rect in raw)
+			rawList.Add(new Godot.Collections.Array { rect.Position.X, rect.Position.Y, rect.Size.X, rect.Size.Y });
+
+		var bandList = new Godot.Collections.Array();
+		foreach (Rect2 rect in bands)
+			bandList.Add(new Godot.Collections.Array { rect.Position.X, rect.Position.Y, rect.Size.X, rect.Size.Y });
+
+		var probes = new Godot.Collections.Dictionary();
+		foreach ((string name, Vector2 at) in new (string, Vector2)[]
+		{
+			("top_left_10_10", new Vector2(10f, 10f)),
+			("just_below_top_bar", new Vector2(viewportSize.X - 136f, 44f)),
+			("viewport_center", viewportSize * 0.5f),
+			("bottom_center", new Vector2(viewportSize.X * 0.5f, viewportSize.Y - 10f)),
+		})
+		{
+			probes[name] = IsScreenPointBlockedByControl(bands, at, 0f);
+		}
+
+		return new Godot.Collections.Dictionary
+		{
+			["blocker_count"] = raw.Count,
+			["band_count"] = bands.Count,
+			["blocker_rects"] = rawList,
+			["band_rects"] = bandList,
+			["probe_blocked"] = probes,
+		};
+	}
+
+	/// <summary>世界矩形 → 屏幕矩形（自动归一化：相机旋转 / 翻转都不会得到负尺寸）。</summary>
+	internal static Rect2 WorldRectToScreen(BoardCamera cam, Rect2 world)	{
+		Vector2 a = cam.WorldToScreen(world.Position);
+		Vector2 b = cam.WorldToScreen(world.End);
+
+		return new Rect2(
+			new Vector2(Mathf.Min(a.X, b.X), Mathf.Min(a.Y, b.Y)),
+			new Vector2(Mathf.Abs(b.X - a.X), Mathf.Abs(b.Y - a.Y)));
+	}
+
+	/// <summary>
+	/// 收集控件矩形、并扩展成"整条带子"。选点与诊断<b>共用这一份</b> ——
+	/// 两处各写一遍迟早会分叉，而分叉的症状是"报告说避开了、实际没避开"，
+	/// 那正是这一轮要消灭的那种假象。
+	/// </summary>
+	private static List<Rect2> BuildBlockerBands(BoardCamera cam, Vector2 viewport)
+	{
+		List<Rect2> raw = CollectBlockingControlRects(cam);
+		var bands = new List<Rect2>(raw.Count);
+
+		foreach (Rect2 rect in raw)
+			bands.Add(ExtendBandIfEdgeToEdge(rect, viewport));
+
+		return bands;
+	}
+
+	/// <summary>
+	/// 收集当前<b>会吃掉鼠标事件</b>的控件矩形（屏幕坐标）。
+	///
+	/// 判据完全按 Godot 的规则来，一条都不猜：
+	/// <list type="bullet">
+	/// <item><c>IsVisibleInTree()</c> —— 自己或祖先不可见就收不到事件；</item>
+	/// <item><c>MouseFilter != Ignore</c> —— <c>Ignore</c> 的控件（HudRoot / Layout /
+	///   MidSpacer / Spacer 这些纯布局容器）<b>真的不挡</b>，所以它们天然被排除，
+	///   不必靠"节点叫什么名字"来筛；</item>
+	/// <item>有非零矩形 —— 零尺寸画不出来也点不到。</item>
+	/// </list>
+	///
+	/// 于是"顶栏多高""底部两条栏多高""编辑器面板开没开"全部由场景说了算：
+	/// 布局改一次，这里自动跟上，不会再出现"改了 HUD、探针忘了改边距"。
+	/// </summary>
+	private static List<Rect2> CollectBlockingControlRects(BoardCamera cam)
+		=> CollectControlRects(cam, blockingOnly: true);
+
+	/// <summary>
+	/// 收集<b>所有</b>可见控件矩形（含 <c>MouseFilter == Ignore</c> 的纯布局容器）。
+	///
+	/// 它只用于"离 UI 越远越好"这一条排序，不参与排除 ——
+	/// 排除必须严格按会不会吃事件来判，而排序可以用更保守的几何。
+	/// </summary>
+	private static List<Rect2> CollectLayoutControlRects(BoardCamera cam)
+		=> CollectControlRects(cam, blockingOnly: false);
+
+	private static List<Rect2> CollectControlRects(BoardCamera cam, bool blockingOnly)
+	{
+		var rects = new List<Rect2>();
+		Viewport? viewport = cam.GetViewport();
+
+		if (viewport is null)
+			return rects;
+
+		foreach (Node child in viewport.GetChildren())
+			CollectControlRectsInto(child, rects, blockingOnly);
+
+		return rects;
+	}
+
+	private static void CollectControlRectsInto(Node node, List<Rect2> rects, bool blockingOnly)
+	{
+		// 注意这里收的是 Node 而不是 Control —— <b>HUD 的根是 <c>CanvasLayer</c>，
+		// 它本身不是 Control</b>。第一版只递归 Control，于是整棵 HUD 树一个矩形都没收到
+		// （实测立刻表现为选点退到 y=8、也就是顶栏里面），三遍稳定地红。
+		// 递归不认识的节点类型是安全的：它们没有子控件，循环自然为空。
+		if (node is Control control)
+		{
+			if (!control.IsVisibleInTree())
+				return;
+
+			if (!blockingOnly || control.MouseFilter != Control.MouseFilterEnum.Ignore)
+			{
+				Rect2 rect = control.GetGlobalRect();
+				if (rect.Size.X > 0f && rect.Size.Y > 0f)
+					rects.Add(rect);
+			}
+		}
+
+		// 注意：<c>PopupMenu</c> / <c>AcceptDialog</c> 是 <c>Window</c> 而不是 <c>Control</c>，
+		// 所以它们自己不会被收进来（它们的子控件会在 <c>IsVisibleInTree()</c> 为假时被跳过）。
+		// 这是有意的 —— 探针自己负责在收尾时 Hide 掉菜单（<c>ObjectManager.HideAllMenus</c>），
+		// 那是另一条已经存在的规矩。
+		foreach (Node child in node.GetChildren())
+			CollectControlRectsInto(child, rects, blockingOnly);
+	}
+
+	/// <summary>该屏幕点是否被某个"会吃鼠标"的控件压住（<paramref name="inset"/> 为额外安全间距）。</summary>
+	internal static bool IsScreenPointBlockedByControl(IReadOnlyList<Rect2> blockers, Vector2 screen, float inset)
+	{
+		foreach (Rect2 rect in blockers)
+		{
+			if (rect.Grow(inset).HasPoint(screen))
+				return true;
+		}
+
+		return false;
+	}
+
+	/// <summary>
+	/// 把"会吃鼠标的控件"扩展成"整条带子"。
+	///
+	/// <b>为什么需要这一步（这一轮实测抓到的）：</b>
+	/// 顶部那条控件带实测是 <c>(0,0,1920,43)</c>，而搜索选出来的落点是 <c>y=44</c> ——
+	/// 它<b>确实不在控件里</b>，避让逻辑并没有失效。可它离控件的下沿只有 <b>1px</b>，
+	/// 仍然是个"贴着命中边缘"的点，正是要避免的东西。
+	///
+	/// 光靠"排除控件矩形"挡不住这种情况：控件之外的第一个像素永远是合法的。
+	/// 于是再进一步 —— 一条<b>横跨整个视口宽度</b>的控件带（顶栏 / 底栏这类），
+	/// 本质上把屏幕切成两半，落点不该停在它的边线上，
+	/// 所以把它当成"上边是视口上边缘、下边是控件下边缘"的一整条带来排除。
+	///
+	/// 判据是"控件在这一维上是否几乎横贯视口"（留 5% 容差给左右边距），
+	/// 不是"控件叫什么名字"—— 名字会变，几何不会。
+	/// </summary>
+	private static Rect2 ExtendBandIfEdgeToEdge(Rect2 rect, Vector2 viewport)
+	{
+		const float Tolerance = 0.05f;
+
+		float dx = viewport.X * Tolerance;
+		float dy = viewport.Y * Tolerance;
+
+		Rect2 result = rect;
+
+		// 横向几乎铺满 → 它是"横贯屏幕的一条" → 往它贴着的那一边扩
+		if (rect.Size.X >= viewport.X - dx)
+		{
+			if (rect.Position.Y <= dy)
+			{
+				// 贴着上边缘（顶栏）：向上吃满到 y=0，向下沿用到它自己的下沿。
+				// 方向不能搞反 —— 第一版这里把 Position.Y 设为 0 却没改高度，
+				// 于是顶栏被"撑"成了一条零高度的带子，y=44 依旧不被挡。
+				result.Position = new Vector2(rect.Position.X, 0f);
+				result.Size = new Vector2(rect.Size.X, rect.End.Y);
+			}
+			else if (rect.End.Y >= viewport.Y - dy)
+			{
+				// 贴着下边缘（底部两条信息栏）：向下吃满到视口底部
+				result.Size = new Vector2(rect.Size.X, viewport.Y - rect.Position.Y);
+			}
+		}
+
+		// 纵向几乎铺满 → 同理（右侧的日志面板就是这一类）
+		if (rect.Size.Y >= viewport.Y - dy)
+		{
+			if (rect.Position.X <= dx)
+			{
+				result.Position = new Vector2(0f, result.Position.Y);
+				result.Size = new Vector2(rect.End.X, result.Size.Y);
+			}
+			else if (rect.End.X >= viewport.X - dx)
+			{
+				result.Size = new Vector2(viewport.X - result.Position.X, result.Size.Y);
+			}
+		}
+
+		return result;
+	}
+
+	/// <summary>该屏幕点离矩形 <paramref name="rect"/> 的边的最近距离（内部为 0）。</summary>
+	private static float DistanceToRectEdges(Rect2 rect, Vector2 screen)
+	{
+		float dx = Mathf.Max(Mathf.Max(rect.Position.X - screen.X, screen.X - rect.End.X), 0f);
+		float dy = Mathf.Max(Mathf.Max(rect.Position.Y - screen.Y, screen.Y - rect.End.Y), 0f);
+
+		return Mathf.Sqrt((dx * dx) + (dy * dy));
+	}
+
+	/// <summary>该屏幕点到最近一个控件矩形的距离（一个都没有时返回一个很大的数）。</summary>
+	private static float DistanceToNearestRect(IReadOnlyList<Rect2> rects, Vector2 screen)
+	{
+		float nearest = float.MaxValue;
+
+		foreach (Rect2 rect in rects)
+			nearest = Mathf.Min(nearest, DistanceToRectEdges(rect, screen));
+
+		return nearest == float.MaxValue ? 1e9f : nearest;
 	}
 
 	/// <summary>该世界点到最近一个可见物件包围盒的间隙（落在某个包围盒里则为 0）。</summary>
@@ -269,9 +645,13 @@ internal static class DevInputSim
 	/// <summary>
 	/// 沿用旧签名的薄包装：返回"最空的那个点"的屏幕坐标。
 	/// 需要知道它到底有多空的调用方请直接用 <see cref="FindEmptiestScreenPoint"/>。
+	///
+	/// <b>找不到干净点时这里会返回 <c>null</c></b>，而不是给一个兜底坐标 ——
+	/// 调用方必须处理这种情况（能跳过就跳过，跳不过就明说"没条件跑"）。
 	/// </summary>
-	internal static Vector2 FindEmptyScreenPoint(BoardCamera cam, ObjectManager objects, ZoneManager? zones = null)
-		=> FindEmptiestScreenPoint(cam, objects, zones).Screen;
+	internal static Vector2? FindEmptyScreenPoint(
+		BoardCamera cam, ObjectManager objects, ZoneManager? zones = null, Board? board = null)
+		=> FindEmptiestScreenPoint(cam, objects, zones, board).Screen;
 
 	/// <summary>
 	/// 世界点是否落在当前视口内（留出 HUD 边距）。
@@ -318,7 +698,7 @@ internal static class DevInputSim
 		BoardCamera cam, Core.Objects.ObjectManager objects, Vector2 nearScreen, float maxRadius,
 		ZoneManager? zones = null)
 	{
-		Vector2 viewport = cam.GetViewportRect().Size;
+		List<Rect2> blockers = CollectBlockingControlRects(cam);
 
 		for (float radius = 90f; radius <= maxRadius; radius += 55f)
 		{
@@ -328,9 +708,9 @@ internal static class DevInputSim
 				float angle = Mathf.Tau * i / Steps;
 				Vector2 screen = nearScreen + (new Vector2(Mathf.Cos(angle), Mathf.Sin(angle)) * radius);
 
-				// 避开顶栏与底部提示条 —— 那些区域会被 HUD 控件吃掉
-				if (screen.X < 24f || screen.X > viewport.X - 24f ||
-					screen.Y < 56f || screen.Y > viewport.Y - 110f)
+				// 避开 HUD 控件 —— 那些地方会被控件吃掉合成鼠标事件。
+				// 这里同样按控件<b>真实几何</b>判，不再靠写死的边距。
+				if (IsScreenPointBlockedByControl(blockers, screen, 8f))
 					continue;
 
 				Vector2 world = cam.ScreenToWorld(screen);
@@ -411,21 +791,74 @@ internal static class DevInputSim
 		vc.EmptyAreaClicked += _ => emptyClicks++;
 		vc.ContextMenuRequested += (_, _) => contextMenus++;
 
-		// 空白点必须动态找 —— 写死坐标在桌面有内容之后就会假失败
-		Vector2 clickAt = objects is not null
-			? FindEmptyScreenPoint(cam, objects)
-			: new Vector2(700f, 400f);
+		// 空白点必须动态找 —— 写死坐标在桌面有内容之后就会假失败，
+		// 而"只避开物件、不避开 HUD"会在控件长高之后假失败（本轮就是这种）。
+		(Vector2? clickAt, float clearance, int candidates) = objects is not null
+			? FindEmptiestScreenPoint(cam, objects, null, FindBoard(host))
+			: ((Vector2?)new Vector2(700f, 400f), 0f, 1);
 
-		r["empty_click_screen"] = new Godot.Collections.Array { clickAt.X, clickAt.Y };
+		r["empty_click_candidates"] = candidates;
+		r["empty_click_clearance"] = clearance;
 
-		PushButton(clickAt, MouseButton.Left, true);
+		// 避让依据本身也要能读出来 —— 见 DescribeScreenBlockers 的说明。
+		Godot.Collections.Dictionary blockersInfo = DescribeScreenBlockers(cam);
+		r["ui_blocker_count"] = blockersInfo["blocker_count"];
+		r["ui_band_count"] = blockersInfo["band_count"];
+		r["ui_blocker_rects"] = blockersInfo["blocker_rects"];
+		r["ui_band_rects"] = blockersInfo["band_rects"];
+		r["ui_probe_blocked"] = blockersInfo["probe_blocked"];
+		r["search_area"] = DescribeSearchArea(cam, FindBoard(host), clickAt);
+
+		// 找不到干净点 = 这一节<b>没条件跑</b>，不是失败。
+		// 按项目约定："没条件跑"与"跑挂了"必须长得不一样 —— 报告里不写 pass 键即跳过，
+		// 这里单独写一条 note 说明为什么，免得以后有人把它当成"忘了跑"。
+		if (clickAt is not Vector2 clickPoint)
+		{
+			r["empty_click_note"] = "屏幕上没有既无物件、又不被 HUD 控件压住的点 —— 跳过点击判定";
+			r["empty_area_clicks"] = -1;
+			r["context_menu_requests"] = -1;
+			r["clicks_ok"] = false;
+			r["clicks_skipped"] = true;
+
+			objects?.HideAllMenus();
+			await Frame(host);
+
+			cam.SetZoomLevel(savedZoom, anchor);
+			cam.CenterOn(savedPos);
+			cam.SnapToTargets();
+
+			bool wheelOkSkip = zoomAfter > zoomBefore && worldBefore.DistanceTo(worldAfter) < 0.01f;
+			r["wheel_ok"] = wheelOkSkip;
+			r["pass"] = wheelOkSkip && (bool)r["pan_ok"];
+			return r;
+		}
+
+		Vector2 clickAtResolved = clickPoint;
+		r["empty_click_screen"] = new Godot.Collections.Array { clickAtResolved.X, clickAtResolved.Y };
+
+		// ---- 落点自身的"合格性"判定 ----
+		//
+		// 这一节的全部价值都建立在"这个落点真的点在桌面上、而且没被控件吃掉"之上。
+		// 少了这两条，选点逻辑一旦退化（贴控件边缘 / 跑出桌面），报告仍然可能是绿的 ——
+		// 而"时红时绿"就是这么来的：落点落在命中边缘时，点得到与点不到各占一半。
+		//
+		// 所以把"落点合格"本身写成断言，让它自己站住。
+		List<Rect2> bandsNow = BuildBlockerBands(cam, cam.GetViewportRect().Size);
+		Board? boardForCheck = FindBoard(host);
+		Vector2 clickWorld = cam.ScreenToWorld(clickAtResolved);
+
+		r["empty_click_not_on_ui"] = !IsScreenPointBlockedByControl(bandsNow, clickAtResolved, 0f);
+		r["empty_click_on_board"] = boardForCheck is null || boardForCheck.BoardRect.HasPoint(clickWorld);
+		r["empty_click_world"] = new Godot.Collections.Array { clickWorld.X, clickWorld.Y };
+
+		PushButton(clickAtResolved, MouseButton.Left, true);
 		await Frame(host);
-		PushButton(clickAt, MouseButton.Left, false);
+		PushButton(clickAtResolved, MouseButton.Left, false);
 		await Frame(host);
 
-		PushButton(clickAt, MouseButton.Right, true);
+		PushButton(clickAtResolved, MouseButton.Right, true);
 		await Frame(host);
-		PushButton(clickAt, MouseButton.Right, false);
+		PushButton(clickAtResolved, MouseButton.Right, false);
 		await Frame(host);
 
 		r["empty_area_clicks"] = emptyClicks;
@@ -446,10 +879,11 @@ internal static class DevInputSim
 		cam.SnapToTargets();
 
 		bool wheelOk = zoomAfter > zoomBefore && worldBefore.DistanceTo(worldAfter) < 0.01f;
-		bool clicksOk = emptyClicks == 1 && contextMenus == 1;
+		bool clicksOk = emptyClicks == 1 && contextMenus == 1 && (bool)r["empty_click_not_on_ui"] && (bool)r["empty_click_on_board"];
 
 		r["wheel_ok"] = wheelOk;
 		r["clicks_ok"] = clicksOk;
+		r["clicks_skipped"] = false;
 		r["pass"] = wheelOk && (bool)r["pan_ok"] && clicksOk;
 
 		return r;

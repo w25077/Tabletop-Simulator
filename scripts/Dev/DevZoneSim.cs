@@ -49,6 +49,24 @@ internal static class DevZoneSim
 			_keys.Add(key);
 		}
 
+		/// <summary>
+		/// 记下"这条断言没条件跑"，并<b>排除在 <see cref="AllPass"/> 之外</b>。
+		///
+		/// 为什么不直接 <c>Put(key, true)</c>：那等于把"跳过"谎报成"通过" ——
+		/// 本项目最贵的一条教训就是"测试说谎比不测更危险"。
+		/// 跳过的语义是"这一节里少验了一条"，与"验过了、是对的"必须分得开。
+		///
+		/// 为什么也不 <c>Put(key, false)</c>：那会把一次环境问题（屏幕上找不到干净落点）
+		/// 读成产品问题。
+		/// </summary>
+		internal void Skip(string reason)
+		{
+			if (!_dict.ContainsKey("skipped_reasons"))
+				_dict["skipped_reasons"] = new Godot.Collections.Array();
+
+			(_dict["skipped_reasons"].AsGodotArray()).Add(reason);
+		}
+
 		internal bool AllPass()
 		{
 			if (_keys.Count == 0)
@@ -315,7 +333,17 @@ internal static class DevZoneSim
 		await DevInputSim.Frame(host);
 		await DevInputSim.Frame(host);
 
-		(Vector2 screen, float clearance) = DevInputSim.FindEmptiestScreenPoint(cam, objects, zones);
+		(Vector2? screenOpt, float clearance, int candidates) =
+			DevInputSim.FindEmptiestScreenPoint(cam, objects, zones, DevInputSim.FindBoard(host));
+
+		if (screenOpt is not Vector2 screen)
+		{
+			string why = $"屏幕上没有既无物件、又不被 HUD 压住的落点（候选 {candidates} 个）";
+			r["multi_drag_skipped"] = why;
+			c.Skip($"multi_drag_to_empty：{why}");
+			return;
+		}
+
 		Vector2 dropWorld = cam.ScreenToWorld(screen);
 
 		// 抓最靠右那张（横排下彼此不重叠，每个位置都能被独立拾取）
@@ -557,8 +585,17 @@ internal static class DevZoneSim
 
 		// 落点必须是<b>真空</b>：既没有物件、也不在任何区域矩形内。
 		// 否则区域会把它接回去，这条断言就变成了在测别的东西。
-		(Vector2 emptyScreen, float clearance) = DevInputSim.FindEmptiestScreenPoint(cam, objects, zones);
+		(Vector2? emptyScreenOpt, float clearance, int candidates) =
+			DevInputSim.FindEmptiestScreenPoint(cam, objects, zones, DevInputSim.FindBoard(host));
 		r["deck_to_table_clearance_px"] = clearance;
+
+		if (emptyScreenOpt is not Vector2 emptyScreen)
+		{
+			string why = $"屏幕上没有既无物件、又不被 HUD 压住的落点（候选 {candidates} 个）";
+			r["deck_to_table_skipped"] = why;
+			c.Skip($"deck_to_table：{why}");
+			return;
+		}
 
 		await DragScreenTo(host, cam, card, emptyScreen);
 
@@ -712,8 +749,17 @@ internal static class DevZoneSim
 		if (!gainedBadgeContext)
 			return;   // 前置不成立 → 后面的断言没有意义，宁可不写，也不写一条骗人的
 
-		(Vector2 emptyScreen, float clearance) = DevInputSim.FindEmptiestScreenPoint(cam, objects, zones);
+		(Vector2? emptyScreenOpt2, float clearance, int candidates2) =
+			DevInputSim.FindEmptiestScreenPoint(cam, objects, zones, DevInputSim.FindBoard(host));
 		r["roundtrip_out_clearance_px"] = clearance;
+
+		if (emptyScreenOpt2 is not Vector2 emptyScreen)
+		{
+			string why = $"屏幕上没有既无物件、又不被 HUD 压住的落点（候选 {candidates2} 个）";
+			r["roundtrip_skipped"] = why;
+			c.Skip($"roundtrip_out：{why}");
+			return;
+		}
 
 		await DragScreenTo(host, cam, card, emptyScreen);
 
@@ -968,7 +1014,17 @@ internal static class DevZoneSim
 		objects.SelectOnly(selection);
 		await DevInputSim.Frame(host);
 
-		Vector2 dropScreen = DevInputSim.FindEmptiestScreenPoint(cam, objects, zones).Screen;
+		Vector2? dropScreenOpt =
+			DevInputSim.FindEmptiestScreenPoint(cam, objects, zones, DevInputSim.FindBoard(host)).Screen;
+
+		if (dropScreenOpt is not Vector2 dropScreen)
+		{
+			string why = "屏幕上没有既无物件、又不被 HUD 压住的落点";
+			r["pile_drag_skipped"] = why;
+			c.Skip($"pile_drag：{why}");
+			return;
+		}
+
 		await DragScreenTo(host, cam, picked[^1], dropScreen);
 
 		Vector2 grabbedDelta = picked[^1].Position - before[picked[^1].Uid];

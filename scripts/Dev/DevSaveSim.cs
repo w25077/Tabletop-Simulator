@@ -272,9 +272,16 @@ internal static class DevSaveSim
 		CardObject? card = FindLooseCard(objects, cam);
 		if (card is not null)
 		{
-			(Vector2 dropScreen, _) = DevInputSim.FindEmptiestScreenPoint(cam, objects, zones);
-			await DevInputSim.DragToScreen(host, cam, card, dropScreen);
-			await DevInputSim.Frame(host);
+			// 找不到干净落点就<b>不拖</b>：这一步只是"把桌子搞乱"的配料，
+			// 不是本节要断言的东西 —— 但绝不能拿一个可能压在 HUD 上的点去拖，
+			// 那会让"存档往返"这一节的结论沾上无关的失败。
+			(Vector2? dropScreenOpt, _, _) =
+				DevInputSim.FindEmptiestScreenPoint(cam, objects, zones, DevInputSim.FindBoard(host));
+			if (dropScreenOpt is Vector2 dropScreen)
+			{
+				await DevInputSim.DragToScreen(host, cam, card, dropScreen);
+				await DevInputSim.Frame(host);
+			}
 		}
 
 		FlipFirstLoose(objects);

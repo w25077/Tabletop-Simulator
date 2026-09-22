@@ -36,6 +36,20 @@ internal static class DevHistorySim
 
 		internal void Data(string key, Variant value) => _dict[key] = value;
 
+		/// <summary>
+		/// 记下"这条断言没条件跑"，并<b>排除在 <see cref="AllPass"/> 之外</b>。
+		///
+		/// 不写成 <c>Put(key, true)</c>：那是把跳过谎报成通过。
+		/// 也不写成 <c>Put(key, false)</c>：那是把环境问题读成产品问题。
+		/// </summary>
+		internal void Skip(string reason)
+		{
+			if (!_dict.ContainsKey("skipped_reasons"))
+				_dict["skipped_reasons"] = new Godot.Collections.Array();
+
+			(_dict["skipped_reasons"].AsGodotArray()).Add(reason);
+		}
+
 		internal bool AllPass()
 		{
 			if (_keys.Count == 0)
@@ -74,7 +88,18 @@ internal static class DevHistorySim
 		Vector2 cardStart = card.Position;
 
 		int countBefore = undo.Count;
-		(Vector2 dropScreen, _) = DevInputSim.FindEmptiestScreenPoint(cam, objects, zones);
+		(Vector2? dropScreenOpt, _, _) =
+			DevInputSim.FindEmptiestScreenPoint(cam, objects, zones, DevInputSim.FindBoard(host));
+
+		if (dropScreenOpt is not Vector2 dropScreen)
+		{
+			// 沿用本项目的既有约定：<b>字典里不写 <c>pass</c> = 这一节没跑</b>，
+			// 与"跑了但红了"在报告里长得不一样。原因写清楚，免得被读成"忘了跑"。
+			r["skipped"] = "屏幕上没有既无物件、又不被 HUD 压住的落点 —— 拖拽历史是本节的入口，"
+				+ "它跑不了则整节都没意义。这不代表产品有问题。";
+			return r;
+		}
+
 		await DevInputSim.DragToScreen(host, cam, card, dropScreen);
 
 		// 再多等一帧：合成输入下"松手"被输入路由处理、进而触发
@@ -430,11 +455,20 @@ internal static class DevHistorySim
 			// <c>Visible=false</c> 的 Control 不参与命中测试，但**一旦谁把它改成
 			// 半透明或只挪出屏幕**，它就会开始吞掉落在那一带的左键 ——
 			// 症状是"桌子右边那一竖条点不动了"，而报告里其它断言全绿。
-			Vector2 emptyScreen = DevInputSim.FindEmptiestScreenPoint(cam, objects, zones).Screen;
+			Vector2? emptyScreenOpt =
+				DevInputSim.FindEmptiestScreenPoint(cam, objects, zones, DevInputSim.FindBoard(host)).Screen;
 			int clicksBefore = viewport.MouseButtonEvents;
-			await DevInputSim.ClickAt(host, emptyScreen);
-			c.Put("log_panel_does_not_block_clicks_when_closed",
-				viewport.MouseButtonEvents > clicksBefore && !log.IsOpen);
+
+			// 找不到干净点就<b>不写这条断言</b>（"没条件跑"）。
+			// 注意这条断言本身有个已知的弱点：干净点必然避开了全部 HUD 控件，
+			// 所以它其实证明不了"面板关着的时候不挡" —— 要真有说服力，
+			// 落点应该选<em>面板开着时被它盖住的那个位置</em>。这一条留待下一轮改。
+			if (emptyScreenOpt is Vector2 emptyScreen)
+			{
+				await DevInputSim.ClickAt(host, emptyScreen);
+				c.Put("log_panel_does_not_block_clicks_when_closed",
+					viewport.MouseButtonEvents > clicksBefore && !log.IsOpen);
+			}
 		}
 
 		// 时间旅行本身（回到最初 / 回到末端）仍然要验 —— 面板的点击最终走的就是它。
