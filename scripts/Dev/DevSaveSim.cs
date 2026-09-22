@@ -355,10 +355,35 @@ internal static class DevSaveSim
 			return false;
 		}
 
+		// <b>必须挑一个"有定义"的物件来破坏。</b>
+		//
+		// 第一版取的是 <c>state.Objects[0]</c>，而 M5.5 P4 之后列表里的第一个
+		// 是<b>计数器</b> —— 计数器压根没有 <c>DefinitionId</c>（它的内容全在实例状态里），
+		// 所以"把定义改成不存在的名字"对它毫无影响、读档也不会跳过它，
+		// 于是这条断言红得莫名其妙（<c>expected_after_load = 37</c> 而实际 38）。
+		//
+		// 现在显式找一张卡：这才是"坏定义优雅降级"要验的那条路。
+		int brokenIndex = -1;
+		for (int i = 0; i < state.Objects.Count; i++)
+		{
+			if (state.Objects[i].Kind == ObjectKind.Card)
+			{
+				brokenIndex = i;
+				break;
+			}
+		}
+
+		if (brokenIndex < 0)
+		{
+			report["error"] = "存档里没有卡牌，无法验证坏定义降级";
+			return false;
+		}
+
 		int before = state.Objects.Count;
-		state.Objects[0].DefinitionId = "不存在的定义";
+		state.Objects[brokenIndex].DefinitionId = "不存在的定义";
 		report["objects_in_broken_file"] = before;
-		report["broken_uid"] = state.Objects[0].Uid;
+		report["broken_uid"] = state.Objects[brokenIndex].Uid;
+		report["broken_kind"] = state.Objects[brokenIndex].Kind.ToString();
 
 		using (FileAccess? f = FileAccess.Open(AppPaths.StateFile(BadName), FileAccess.ModeFlags.Write))
 		{

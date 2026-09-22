@@ -628,7 +628,31 @@ public partial class ZoneManager : Node2D, IZoneInteraction
 			return false;
 		}
 
-		// 落在区域里就由区域定夺 —— 即使被拒（满了 / 锁了）也算"区域处理过了"，
+		// ---- 垃圾桶（M5.5 P4）----
+		//
+		// <b>它不是一个"会装东西的区域"，而是一个动作</b>：拖进去 = 删掉。
+		// 所以这条判断必须排在 MoveInto 之前 —— 让物件真的以成员身份进去，
+		// 就还得再写一套"进了桶就销毁成员"的清理，而且过程中它会短暂地
+		// 出现在桶的成员列表里（HUD 计数、区域不变量都会看见一个不该存在的状态）。
+		//
+		// 走 DeleteObjects，因此 <b>Ctrl+Z 撤得回来</b> —— 这与"拖出桌面即删除"
+		// 是同一条路，垃圾桶就是"不越界也能删"的那条互补通道。
+		if (zone.Kind == ZoneKind.Trash)
+		{
+			int count = dropped.Count;
+			_dragOrigin.Clear();
+
+			var victims = new List<TabletopObject>(dropped);
+			_objects?.DeleteObjects(victims);
+
+			_hud?.Toast(count == 1
+				? $"已丢进垃圾桶「{zone.DisplayName}」（Ctrl+Z 可撤回）"
+				: $"已丢进垃圾桶「{zone.DisplayName}」{count} 件（Ctrl+Z 可撤回）");
+
+			return true;
+		}
+
+		// 落在区域里就由区域定夺 —— 即使被拒（满了 / 锁了）也算"区域处理过"，
 		// 物件不该转头去走自由堆逻辑、意外和桌上的牌粘成一堆。
 		if (!MoveInto(zone, dropped))
 		{

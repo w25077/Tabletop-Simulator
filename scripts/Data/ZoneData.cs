@@ -23,6 +23,15 @@ public enum ZoneKind
 	/// <summary>公共区：自由摆放，任何物件都能进。</summary>
 	Public,
 
+	/// <summary>
+	/// 垃圾桶（M5.5 P4）：<b>拖进去的东西会被删掉</b>，而不是成为它的成员。
+	///
+	/// 复用区域系统而不是另造一个组件，是因为拖拽路径、命中测试、右键菜单、
+	/// 存档全都是现成的 —— 用户拍板的也正是这个方案。
+	/// "删"这个动作写在 <c>ZoneManager.TryHandleDrop</c> 里（排在 MoveInto 之前）。
+	/// </summary>
+	Trash,
+
 	/// <summary>自定义。M5 的「画区域」默认给这个，全部参数手填。</summary>
 	Custom,
 }
@@ -180,6 +189,9 @@ public static class ZoneDefaults
 	public static readonly Vector2 PublicZoneSize = new(700f, 460f);
 	public static readonly Vector2 CustomZoneSize = new(500f, 400f);
 
+	/// <summary>垃圾桶尺寸：小一点、像个"桶"，不占桌面。</summary>
+	public static readonly Vector2 TrashZoneSize = new(260f, 260f);
+
 	public static readonly Color DefaultTint = new(1f, 1f, 1f, 0.06f);
 	public static readonly Color DefaultBorder = new("#4c566a");
 
@@ -190,6 +202,9 @@ public static class ZoneDefaults
 	private static readonly Color PlayColor = new("#ebcb8b");     // 亮黄
 	private static readonly Color PublicColor = new("#b48ead");   // 紫
 	private static readonly Color CustomColor = new("#4c566a");   // 灰
+
+	/// <summary>垃圾桶：用警示红（与"已满 / 锁定"同一个色相）—— 它是唯一一个"会毁掉东西"的区域。</summary>
+	private static readonly Color TrashColor = new("#bf616a");
 
 	/// <summary>区域底色：拿类型色压到很低的透明度，别盖住桌面网格。</summary>
 	public static Color TintFor(ZoneKind kind)
@@ -212,6 +227,7 @@ public static class ZoneDefaults
 		ZoneKind.Discard => DiscardColor,
 		ZoneKind.Play => PlayColor,
 		ZoneKind.Public => PublicColor,
+		ZoneKind.Trash => TrashColor,
 		_ => CustomColor,
 	};
 
@@ -222,6 +238,7 @@ public static class ZoneDefaults
 		ZoneKind.Hand => HandZoneSize,
 		ZoneKind.Play => PlayZoneSize,
 		ZoneKind.Public => PublicZoneSize,
+		ZoneKind.Trash => TrashZoneSize,
 		_ => CustomZoneSize,
 	};
 
@@ -233,6 +250,7 @@ public static class ZoneDefaults
 		ZoneKind.Discard => "弃牌堆",
 		ZoneKind.Play => "出牌区",
 		ZoneKind.Public => "公共区",
+		ZoneKind.Trash => "垃圾桶",
 		_ => "区域",
 	};
 
@@ -279,6 +297,20 @@ public static class ZoneDefaults
 			case ZoneKind.Play:
 			case ZoneKind.Public:
 			case ZoneKind.Custom:
+				def.SortMode = ZoneSortMode.Free;
+				def.FaceOnEnter = FaceOnEnter.Unchanged;
+				def.SnapOnDrop = false;
+				break;
+
+			case ZoneKind.Trash:
+				// 垃圾桶：<b>不修排版、不改朝向</b> —— 它压根不留成员（拖进去就被删）。
+				// 这几种参数留着只是为了让"万一有东西进来了"也有个确定行为，
+				// 不至于靠默认值碰运气。
+				def.SortMode = ZoneSortMode.Free;
+				def.FaceOnEnter = FaceOnEnter.Unchanged;
+				def.SnapOnDrop = false;
+				break;
+
 			default:
 				def.SortMode = ZoneSortMode.Free;
 				def.FaceOnEnter = FaceOnEnter.Unchanged;

@@ -152,4 +152,24 @@ public static class GameConfig
 	/// （要看得清才谈得上"确认一下我拖的是哪张"）。
 	/// </summary>
 	public static readonly Color DragOutTint = new("#ff8f8f");
+
+	// ---- 血量 / 计数器组件（M5.5 P4）----
+
+	/// <summary>计数器尺寸。比卡牌小一圈 —— 它是"桌上的一件小道具"，不该和牌抢地方。</summary>
+	public static readonly Vector2 StatSize = new(240f, 150f);
+
+	public static readonly Color StatBackground = new("#eceff4");
+	public static readonly Color StatBorder = new("#4c566a");
+	public static readonly Color StatLabelColor = new("#4c566a");
+
+	/// <summary>数值字号。比标签大一倍多 —— 一眼要读到的是"还剩多少"。</summary>
+	public const int StatValueFontSize = 48;
+	public const int StatLabelFontSize = 22;
+	public const float StatPadding = 14f;
+
+	/// <summary>点一下加多少 / Shift 点一下减多少。</summary>
+	public const int StatStep = 1;
+
+	/// <summary>按住 Shift 时一步改多少（快速调大数值）。</summary>
+	public const int StatBigStep = 10;
 }

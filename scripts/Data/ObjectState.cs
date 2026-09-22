@@ -3,12 +3,23 @@ using Godot;
 
 namespace TabletopSimulator.Data;
 
-/// <summary>桌面物件的三种类型。</summary>
+/// <summary>桌面物件的四种类型。</summary>
 public enum ObjectKind
 {
 	Card,
 	Token,
 	Dice,
+
+	/// <summary>
+	/// 血量 / 计数器组件（M5.5 P4）：桌面上一个可拖的"数值牌"，显示形如 <c>60/60</c>。
+	///
+	/// <b>为什么是第四种物件、而不是卡牌字段的可视化</b>（用户拍板）：
+	/// 血量是<b>对局中会变的状态</b>，卡牌字段是<b>卡的定义</b> ——
+	/// 前者要能独立于任何一张卡存在（"这局我 60 血"），后者改一次整副牌一起变。
+	/// 项目里已经有现成的分类法（<see cref="ObjectKind"/> + <see cref="ObjectState"/>），
+	/// 加一个成员是顺着结构长，不是另起一套。
+	/// </summary>
+	Stat,
 }
 
 /// <summary>
@@ -71,6 +82,20 @@ public sealed class ObjectState
 	/// <summary>Token 的实例级文字覆盖（比如同一份定义打出多个不同数值的指示物）。</summary>
 	public string TokenTextOverride { get; set; } = "";
 
+	// ---- 血量 / 计数器专属（M5.5 P4）----
+	/// <summary>
+	/// 当前值。<b>它必须在这里</b> —— M4 那条规矩："加新字段时先问它进没进
+	/// <see cref="ObjectState"/>"。不进就写不回来，而症状是"改了血量却 <c>Ctrl+Z</c> 撤不掉"，
+	/// 骰子点数当年就是这么栽的（同一个坑，见 <see cref="SameAs"/> 里那段说明）。
+	/// </summary>
+	public int StatCurrent { get; set; } = 60;
+
+	/// <summary>上限。只影响显示，但同样要进快照 —— 否则改上限也撤不掉。</summary>
+	public int StatMax { get; set; } = 60;
+
+	/// <summary>标签（"血量"/"护甲"…）。</summary>
+	public string StatLabel { get; set; } = "血量";
+
 	public ObjectState Clone() => new()
 	{
 		Uid = Uid,
@@ -88,6 +113,9 @@ public sealed class ObjectState
 		DiceValues = new List<int>(DiceValues),
 		DiceSeed = DiceSeed,
 		TokenTextOverride = TokenTextOverride,
+		StatCurrent = StatCurrent,
+		StatMax = StatMax,
+		StatLabel = StatLabel,
 	};
 
 	/// <summary>
@@ -141,6 +169,15 @@ public sealed class ObjectState
 			return false;
 
 		if (TokenTextOverride != other.TokenTextOverride)
+			return false;
+
+		// <b>血量三项也算内容</b>（M5.5 P4）。
+		//
+		// 与上面骰子点数那两句是同一个理由，而且是同一条用户要求：
+		// "改血量必须能被 Ctrl+Z 退回去"。少了这三句，一次"+1 血量"会被
+		// <c>UndoSystem.Record</c> 判成"什么都没变"、连历史都不记 ——
+		// 用户看到数字跳了、而撤销按下去毫无反应。
+		if (StatCurrent != other.StatCurrent || StatMax != other.StatMax || StatLabel != other.StatLabel)
 			return false;
 
 		if (FieldOverrides.Count != other.FieldOverrides.Count)

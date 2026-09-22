@@ -41,13 +41,28 @@ public static class DemoContent
 		internal const float PileX = 2100f;
 		internal const float TokenX = 2100f;
 		internal const float DiceX = 2600f;
+
+		/// <summary>计数器摆在下带，与骰子同一行、更靠右（那一带最空）。</summary>
+		internal const float StatX = 2500f;
+		internal const float StatY = 1560f;
 	}
+
+	/// <summary>
+	/// 垃圾桶的落点（右下角）。
+	///
+	/// 与牌库（左上）离得最远 —— 拖牌去垃圾桶的路上不会经过别的区域，
+	/// 于是"顺手丢一个"不会变成"顺手放进手牌"。
+	/// </summary>
+	private static readonly Vector2 TrashTopLeft = new(2860f, 1560f);
 
 	public const string DeckZoneId = "demo.zone.deck";
 	public const string HandZoneId = "demo.zone.hand";
 	public const string DiscardZoneId = "demo.zone.discard";
 	public const string PlayZoneId = "demo.zone.play";
 	public const string PublicZoneId = "demo.zone.public";
+
+	/// <summary>垃圾桶区域的 id（M5.5 P4）。</summary>
+	public const string TrashZoneId = "demo.zone.trash";
 
 	/// <summary>示例卡组的 id（"新建存档"与示例桌面共用同一份）。</summary>
 	public const string StarterDeckId = "demo.deck.starter";
@@ -223,6 +238,9 @@ public static class DemoContent
 		// ---- 区域 ----
 		BuildZones(zones);
 
+		// ---- 计数器（M5.5 P4）：两个，其中一个不是 60/60 ----
+		BuildStats(manager);
+
 		// ---- 牌库：20 张，盖着放进去。配方来自示例卡组（M5 收口）----
 		BuildDeck(manager, zones, starter);
 
@@ -248,6 +266,28 @@ public static class DemoContent
 		// 手牌区放在下带：它是唯一会"长满"的区域（横排 10 张），
 		// 放中间会和散件道具抢地方。宽度用满整张桌面，才能让 10 张卡排成一行不换行。
 		zones.AddZone(ZoneDefaults.Create(ZoneKind.Hand, HandZoneId, "手牌", new Vector2(16f, 1440f)));
+
+		// ---- 垃圾桶（M5.5 P4）----
+		//
+		// 出厂就摆在桌上，理由是<b>可发现性</b>：用户实测反馈里那条"没有垃圾桶组件"
+		// 说的是"这桌上没有这么个东西"，而不是"我没有创建它的入口"。
+		// 摆在右下角 —— 与牌库（左上）离得最远，拖过去的路上不会误碰别的区域。
+		zones.AddZone(ZoneDefaults.Create(ZoneKind.Trash, TrashZoneId, "垃圾桶", TrashTopLeft));
+	}
+
+	// ------------------------------------------------------------------ 计数器（M5.5 P4）
+
+	/// <summary>
+	/// 摆两个血量 / 计数器：一个默认的 <c>60/60</c>，一个<b>不是 60/60</b> 的。
+	///
+	/// 第二个是有意摆的 —— 用户实测反馈明确说过
+	/// 「血量不一定是 60/60，也有可能是 xxx/xxx」。
+	/// 桌上摆一个 <c>12/20</c>，这件事就不再只是代码里的一句注释。
+	/// </summary>
+	private static void BuildStats(ObjectManager manager)
+	{
+		manager.SpawnStat(new StatData { Label = "血量", Current = 60, Max = 60 }, new Vector2(Layout.StatX, Layout.StatY));
+		manager.SpawnStat(new StatData { Label = "护甲", Current = 12, Max = 20 }, new Vector2(Layout.StatX + 280f, Layout.StatY));
 	}
 
 	// ------------------------------------------------------------------ 牌库

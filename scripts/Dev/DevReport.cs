@@ -187,6 +187,12 @@ internal static class DevReport
 		CardObject card => card.IsFaceDown ? card.Definition.BackTint : card.Definition.FaceTint,
 		TokenObject token => token.Definition.Fill,
 		DiceObject dice => dice.Tint,
+
+		// 计数器（M5.5 P4）：它的"填充色"就是底板色。
+		// 这里<b>必须显式列出</b> —— 落进 <c>_ =></c> 那一支会拿品红去比，
+		// 于是新增一种物件就凭空多两条红，而报告里只会说"距离 0.54"。
+		// 第一次加 Stat 时就踩了：视觉探针不认识它，两条 stat 全红。
+		StatObject stat => GameConfig.StatBackground,
 		_ => Colors.Magenta,
 	};
 

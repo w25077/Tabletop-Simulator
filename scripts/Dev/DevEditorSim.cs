@@ -91,6 +91,8 @@ internal static class DevEditorSim
 			ProbeZoneResize(c, r, editor, zones, main.Camera);
 			ProbeZoneBoardBounds(c, r, zones, main.Board);
 			await ProbeOutOfBoardObjects(main, c, r, baseline, main, objects, zones);
+			ProbeTrashZone(c, r, zones, objects, undo);
+			ProbeStatComponent(c, r, new Vector2(1200f, 1560f), objects, undo);
 			await ProbeZoneDeleteEntry(main, c, r, zones, main.Camera, undo);
 			ProbeDeleteGuards(c, r, objects, zones);
 			ProbeFocusIsKept(c, r, editor, objects);
@@ -2335,6 +2337,179 @@ internal static class DevEditorSim
 		baselineForCleanup?.Restore(objects, zones);
 		SaveSystem.DeleteSave(ProbeSave);
 		await DevInputSim.Frame(host);
+	}
+
+	// ------------------------------------------------------------------ 垃圾桶（P4-6a）
+
+	/// <summary>
+	/// 「拖进垃圾桶就删掉」（M5.5 P4，用户拍板：复用区域系统做 <c>ZoneKind.Trash</c>）。
+	///
+	/// 四条判据：
+	/// <list type="number">
+	/// <item><b>拖进去物件真的少了</b>，而且少的是被拖的那件；</item>
+	/// <item><b>垃圾桶自己不留成员</b> —— 它是"一个动作"，不是"一个会装东西的区域"。
+	///   这一条抓的是"顺手复用 MoveInto"的写法：那样物件会短暂成为桶的成员，
+	///   HUD 计数与区域不变量都会看见一个不该存在的状态。</item>
+	/// <item><b>撤销能把它找回来</b> —— 与"拖出桌面即删除"同一条路，
+	///   误丢一个东西不该是不可逆的。</item>
+	/// <item><b>反例：拖到桌面上（不进桶）不删</b> —— 没有它的话，"什么都删"也能通过。</item>
+	/// </list>
+	/// </summary>
+	private static void ProbeTrashZone(
+		Checks c, Godot.Collections.Dictionary r,
+		ZoneManager zones, ObjectManager objects, UndoSystem undo)
+	{
+		Zone? trash = zones.Find(DemoContent.TrashZoneId);
+
+		if (trash is null)
+		{
+			// 示例内容里没有垃圾桶 = 这一节没条件跑（不写 pass 的断言）
+			r["trash_probe_skipped"] = "示例内容里找不到垃圾桶区域";
+			return;
+		}
+
+		c.Put("trash_zone_exists", trash.Kind == ZoneKind.Trash);
+		c.Put("trash_zone_is_empty", trash.Count == 0);
+
+		// 找一张散件卡当牺牲品
+		CardObject? victim = null;
+		foreach (TabletopObject obj in objects.AllObjects)
+		{
+			if (obj is CardObject card && card.ZoneId.Length == 0 && card.PileId == 0 && card.Visible)
+			{
+				victim = card;
+				break;
+			}
+		}
+
+		if (victim is null)
+		{
+			r["trash_probe_skipped"] = "找不到散件卡当牺牲品";
+			return;
+		}
+
+		string victimUid = victim.Uid;
+		int before = objects.ObjectCount;
+		undo.Reset();   // 从这一刻起量历史（与"每个入口恰好一条"同一套做法）
+
+		// 直接问区域系统"落点在桶里怎么办" —— 走的是与真实拖拽完全相同的入口
+		// （ObjectManager 在松手时就是调它）。
+		bool handled = zones.TryHandleDrop(new List<TabletopObject> { victim }, trash.Definition.Center);
+		r["trash_handled"] = handled;
+
+		bool gone = true;
+		foreach (TabletopObject obj in objects.AllObjects)
+		{
+			if (obj.Uid == victimUid)
+				gone = false;
+		}
+
+		r["trash_count_before"] = before;
+		r["trash_count_after"] = objects.ObjectCount;
+
+		c.Put("trash_handled_the_drop", handled);
+		c.Put("trash_deleted_the_object", gone && objects.ObjectCount == before - 1);
+		c.Put("trash_kept_itself_empty", trash.Count == 0);
+
+		// 撤销：误丢的东西必须能捡回来
+		bool undone = undo.Undo();
+		bool back = false;
+		foreach (TabletopObject obj in objects.AllObjects)
+		{
+			if (obj.Uid == victimUid)
+				back = true;
+		}
+
+		c.Put("trash_delete_is_undoable", undone && back);
+	}
+
+	// ------------------------------------------------------------------ 计数器（P4-6b）
+
+	/// <summary>
+	/// 「血量 / 计数器组件」（M5.5 P4，用户拍板：新 <c>ObjectKind.Stat</c>）。
+	///
+	/// <b>用户对数值有一句明确的澄清</b>：「血量不一定是 60/60，也有可能是 xxx/xxx」——
+	/// 所以这一节除了"能加能减"，还专门验"任意数值都成立"：
+	/// 造一个 <c>7/13</c> 的计数器，它必须原样显示、原样进快照。
+	///
+	/// 判据：
+	/// <list type="number">
+	/// <item>轻点 +1、Shift 轻点 −1（走 <c>PrimaryReleased</c>，与真实点击同一条路）；</item>
+	/// <item><b>改数值进历史，且撤销真的把数字退回去</b> —— 骰子点数当年就是"改了却撤不掉"，同一个坑不能再踩；</item>
+	/// <item>数值进快照：<c>CaptureState</c> → <c>InstantiateFromState</c> 之后一模一样；</item>
+	/// <item>示例桌面上有一个<b>不是 60/60</b> 的计数器（把用户那句话摆到桌上）。</item>
+	/// </list>
+	/// </summary>
+	private static void ProbeStatComponent(
+		Checks c, Godot.Collections.Dictionary r,
+		Vector2 where, ObjectManager objects, UndoSystem undo)
+	{
+		// 刻意用一个"不是 60/60"的数值造靶子
+		StatObject stat = objects.SpawnStat(new StatData { Label = "血量", Current = 7, Max = 13 }, where);
+
+		bool spawned = false;
+		foreach (TabletopObject obj in objects.AllObjects)
+		{
+			if (ReferenceEquals(obj, stat))
+				spawned = true;
+		}
+
+		c.Put("stat_spawned", spawned);
+		c.Put("stat_keeps_arbitrary_values", stat.Data.Current == 7 && stat.Data.Max == 13);
+		c.Put("stat_text_is_readable", stat.Data.DisplayText.Contains("7/13"));
+
+		r["stat_initial"] = $"{stat.Data.Current}/{stat.Data.Max}";
+
+		undo.Reset();
+
+		// ---- 轻点 +1 ----
+		objects.SelectOnly(stat);
+		objects.SimulatePrimaryReleaseForTest(stat.Position);
+		r["stat_after_plus"] = $"{stat.Data.Current}/{stat.Data.Max}";
+		c.Put("stat_click_adds_one", stat.Data.Current == 8);
+
+		int entriesAfterPlus = undo.Count;
+		r["stat_undo_entries_after_plus"] = entriesAfterPlus;
+		c.Put("stat_change_records_history", entriesAfterPlus == 1);
+
+		// ---- 再点一下，然后撤销：数字必须退回 8 ----
+		objects.SimulatePrimaryReleaseForTest(stat.Position);
+		bool secondChanged = stat.Data.Current == 9;
+		undo.Undo();
+
+		r["stat_after_second_click"] = stat.Data.Current;
+		c.Put("stat_second_click_adds_one", secondChanged);
+		c.Put("stat_undo_restores_the_number", stat.Data.Current == 8);
+
+		// ---- 数值进快照：抓一份状态、另造一个、逐项比对 ----
+		ObjectState state = stat.CaptureState();
+		TabletopObject? revived = objects.InstantiateFromState(state);
+
+		if (revived is StatObject copy)
+		{
+			c.Put("stat_survives_a_snapshot_roundtrip",
+				copy.Data.Current == state.StatCurrent
+				&& copy.Data.Max == state.StatMax
+				&& copy.Data.Label == state.StatLabel);
+
+			objects.DeleteObjects(new List<TabletopObject> { copy });
+		}
+		else
+		{
+			c.Put("stat_survives_a_snapshot_roundtrip", false);
+		}
+
+		// ---- 示例桌面上有一个不是 60/60 的计数器 ----
+		bool sawArbitrary = false;
+		foreach (TabletopObject obj in objects.AllObjects)
+		{
+			if (obj is StatObject s && (s.Data.Current != 60 || s.Data.Max != 60))
+				sawArbitrary = true;
+		}
+
+		c.Put("demo_has_a_non_60_stat", sawArbitrary);
+
+		objects.DeleteObjects(new List<TabletopObject> { stat });
 	}
 
 	// ------------------------------------------------------------------ 删除入口（P2-4c）

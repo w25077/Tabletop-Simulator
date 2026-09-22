@@ -34,10 +34,28 @@ public partial class ObjectManager : Node2D, IWorldPicker, IWheelHandler
 		// 面数与数量用区间
 		SidesBase = 100,
 		CountBase = 200,
+
+		// ---- 计数器（M5.5 P4）----
+		StatPlus,
+		StatMinus,
+		StatPlusBig,
+		StatMinusBig,
+		/// <summary>改上限用区间：<c>StatMaxBase + i</c> 对应 <see cref="StatMaxChoices"/>[i]。</summary>
+		StatMaxBase = 300,
 	}
 
 	private static readonly int[] DiceSideChoices = { 4, 6, 8, 10, 12, 20, 100 };
 	private static readonly int[] DiceCountChoices = { 1, 2, 3, 5 };
+
+	/// <summary>
+	/// 计数器右键菜单里可选的"上限"。
+	///
+	/// 有一组预设是因为"改上限"本身是低频操作，而让它去弹一个输入框
+	/// 会为了少数几次改动给右键菜单加一条异步路径；
+	/// 真要任意数值（用户说过 <c>xxx/xxx</c>），走「桌面」页之外的
+	/// 计数器数字输入框那条路 —— 见 <c>StatEditorPage</c>。
+	/// </summary>
+	private static readonly int[] StatMaxChoices = { 10, 20, 40, 60, 100, 200 };
 
 	// ---- 集合 ----
 	private readonly List<TabletopObject> _drawOrder = new();
@@ -207,12 +225,32 @@ public partial class ObjectManager : Node2D, IWorldPicker, IWheelHandler
 		viewport.PrimaryDoubleClicked += OnPrimaryDoubleClicked;
 		viewport.PointerMoved += OnPointerMoved;
 
+		// 「轻点计数器即改数值」（M5.5 P4）—— 与"轻点骰子即掷"是同一类：
+		// 高频操作不该逼人去右键菜单里翻。走 PrimaryReleased 而不是 PrimaryPressed：
+		// 那一条在"松开且没拖动"时才发，正是"轻点"的语义。
+		viewport.PrimaryReleased += OnStatClicked;
+
 		// 【项目约定】右键菜单在 Main.tscn 里搭好（挂在 HudRoot 下），这里只取来接线。
 		_menu = hudLayer.GetNode<PopupMenu>("HudRoot/ObjectMenu");
 		_menu.IdPressed += OnMenuItemPressed;
 	}
 
 	// ------------------------------------------------------------------ 创建
+
+	/// <summary>
+	/// 在桌面上造一个计数器（M5.5 P4）。
+	///
+	/// <b>数值完全由调用方给</b>：默认 60/60 只是"新建时的样子"，
+	/// 用户实测反馈明确说过"血量不一定是 60/60，也有可能是 xxx/xxx"。
+	/// </summary>
+	public StatObject SpawnStat(StatData data, Vector2 position)
+	{
+		StatObject stat = new() { Position = position };
+		stat.AssignUid(NextUid("stat"));
+		stat.SetData(data);
+		Register(stat);
+		return stat;
+	}
 
 	public CardObject SpawnCard(CardDefinition definition, Vector2 position, float rotationDeg = 0f, bool faceDown = false)
 	{
@@ -247,6 +285,16 @@ public partial class ObjectManager : Node2D, IWorldPicker, IWheelHandler
 	}
 
 	private string NextUid(string prefix) => $"{prefix}-{++_nextUid:D4}";
+
+	/// <summary>
+	/// 自检入口：合成一次"轻点物件后松手"（<c>PrimaryReleased</c>）。
+	///
+	/// 为什么不直接调 <see cref="OnStatClicked"/>：那验的是"这个私有方法对不对"，
+	/// 而真正会出错的是"它有没有被接到信号上""参数是不是屏幕/世界坐标搞混了"。
+	/// 走信号就等于顺带验了接线 —— 与遮罩层那个 <c>SimulateDragForTest</c> 同一个套路
+	/// （那边也是"不另写一条给测试用的捷径，捷径验的是捷径"）。
+	/// </summary>
+	internal void SimulatePrimaryReleaseForTest(Vector2 worldPos) => OnStatClicked(worldPos);
 
 	// ------------------------------------------------------------------ 定义改动（M5）
 
@@ -860,8 +908,49 @@ public partial class ObjectManager : Node2D, IWorldPicker, IWheelHandler
 		ApplyDrawOrder();
 	}
 
-	private void OnEmptyAreaClicked(Vector2 worldPos)
+	/// <summary>
+	/// 「轻点计数器即改数值」（M5.5 P4）。
+	///
+	/// <list type="bullet">
+	/// <item><b>点一下</b>：+<see cref="GameConfig.StatStep"/>（默认 1）。</item>
+	/// <item><b>Shift + 点</b>：−<see cref="GameConfig.StatStep"/>。</item>
+	/// <item><b>Ctrl + 点</b>：+<see cref="GameConfig.StatBigStep"/>（快速调大，不用点几十次）。</item>
+	/// <item><b>Shift + Ctrl + 点</b>：−<see cref="GameConfig.StatBigStep"/>。</item>
+	/// </list>
+	///
+	/// <b>为什么用修饰键而不是"左右键"或"两个小按钮"</b>：计数器上画两个小按钮意味着
+	/// 每个按钮都要有自己的命中区域，而它们比把手还小、在缩放下点不中；
+	/// 右键在本项目里已经固定是"弹菜单"，占用它会破坏一致性。
+	///
+	/// <b>记历史是这里的关键</b>：改完必须 <see cref="RecordHistory"/>，
+	/// 否则"改了血量却撤不掉" —— 那正是骰子点数当年栽过的坑（M4 的真 bug）。
+	/// 而 <c>ObjectState.SameAs</c> 比了这三个字段，所以"记录"这一步才认得出变化。
+	/// </summary>
+	private void OnStatClicked(Vector2 worldPos)
 	{
+		if (_selection.Count != 1 || _selection[0] is not StatObject stat)
+			return;
+
+		if (!IsInstanceValid(stat))
+			return;
+
+		bool big = Input.IsKeyPressed(Key.Ctrl);
+		bool minus = Input.IsKeyPressed(Key.Shift);
+		int step = big ? GameConfig.StatBigStep : GameConfig.StatStep;
+		int delta = minus ? -step : step;
+
+		if (!stat.AddCurrent(delta))
+			return;
+
+		RecordHistory($"{stat.Data.Label} {(delta > 0 ? "+" : "")}{delta}（现在 {stat.Data.Current}/{stat.Data.Max}）");
+
+		// 这次手势已经在上面记过一条，别让收尾那行再记一次 ——
+		// 否则一次点击产出两条历史，用户按一次 Ctrl+Z 只退掉一半。
+		_dropAlreadyRecorded = true;
+		_lastDropLabel = "";
+	}
+
+	private void OnEmptyAreaClicked(Vector2 worldPos)	{
 		// 空点一下：没有选中集就什么都不做，有就取消
 		if (_selection.Count > 0)
 			ClearSelectionInternal();
@@ -1511,6 +1600,7 @@ public partial class ObjectManager : Node2D, IWorldPicker, IWheelHandler
 			ObjectKind.Card => CreateCard(state),
 			ObjectKind.Token => CreateToken(state),
 			ObjectKind.Dice => CreateDice(state),
+			ObjectKind.Stat => CreateStat(state),
 			_ => null,
 		};
 
@@ -1554,6 +1644,29 @@ public partial class ObjectManager : Node2D, IWorldPicker, IWheelHandler
 		DiceObject dice = new();
 		dice.Configure(state.DiceSides, state.DiceCount, state.DiceValues, state.DiceSeed);
 		return dice;
+	}
+
+	/// <summary>
+	/// 按快照造一个计数器（读档 / 撤销 / 复制都走这里）。
+	///
+	/// <b>与卡牌 / 指示物不同的地方：它不需要任何"定义"</b> ——
+	/// 计数器的全部内容（标签、当前值、上限）都在实例状态里。
+	/// 所以这里不会像 <see cref="CreateCard"/> 那样因为"定义找不到"而返回 null，
+	/// 也就不存在"读档之后某个计数器消失了"这种事。
+	///
+	/// 数值本身由随后的 <c>ApplyState</c> → <c>ApplyExtra</c> 写进去；
+	/// 这里先给一份默认的，免得那一步之前有人读到半成品状态。
+	/// </summary>
+	private static StatObject CreateStat(ObjectState state)
+	{
+		StatObject stat = new();
+		stat.SetData(new StatData
+		{
+			Label = state.StatLabel,
+			Current = state.StatCurrent,
+			Max = state.StatMax,
+		});
+		return stat;
 	}
 
 	/// <summary>抓取全部物件的状态快照（M4 存档 / 撤销用）。</summary>
@@ -2031,11 +2144,44 @@ public partial class ObjectManager : Node2D, IWorldPicker, IWheelHandler
 
 			_ = dice;
 		}
+
+		// ---- 计数器专属（M5.5 P4）----
+		//
+		// 轻点就能加减，菜单里再给一套显式的 —— 两件事都有理由：
+		// 轻点是高频操作（每次受伤害都要点一下），而菜单是<b>可发现性</b>
+		// （新用户不会知道"Shift + 点"是减）。两套入口共用同一条改数值的路径。
+		if (target is StatObject stat)
+		{
+			_menu.AddSeparator();
+			_menu.AddItem($"加 {GameConfig.StatStep}（现在 {stat.Data.Current}/{stat.Data.Max}）", (int)MenuId.StatPlus);
+			_menu.AddItem($"减 {GameConfig.StatStep}", (int)MenuId.StatMinus);
+			_menu.AddItem($"加 {GameConfig.StatBigStep}", (int)MenuId.StatPlusBig);
+			_menu.AddItem($"减 {GameConfig.StatBigStep}", (int)MenuId.StatMinusBig);
+
+			PopupMenu maxes = new() { Name = "StatMax" };
+			for (int i = 0; i < StatMaxChoices.Length; i++)
+				maxes.AddItem($"上限 {StatMaxChoices[i]}", (int)MenuId.StatMaxBase + i);
+			maxes.IdPressed += OnMenuItemPressed;
+			_menu.AddChild(maxes);
+			_menu.AddSubmenuNodeItem("上限", maxes);
+		}
 	}
 
 	private void OnMenuItemPressed(long id)
 	{
 		int menuId = (int)id;
+
+		// 计数器的"上限"子菜单（M5.5 P4）。
+		//
+		// <b>这一段必须排在下面那几条区间判断之前</b>：那些判断写的是
+		// <c>menuId &gt;= CountBase</c>（无上界），所以任何比 200 大的 id 都会被它们先接走 ——
+		// StatMaxBase = 300 会落进 CountBase 那一支，然后被
+		// "index 超范围就什么都不做"静默吞掉。症状是"点了上限没反应"，极难往回查。
+		if (menuId >= (int)MenuId.StatMaxBase && menuId < (int)MenuId.StatMaxBase + StatMaxChoices.Length)
+		{
+			ApplyStatMax(StatMaxChoices[menuId - (int)MenuId.StatMaxBase]);
+			return;
+		}
 
 		if (menuId >= (int)MenuId.SidesBase + 900)
 		{
@@ -2127,7 +2273,72 @@ public partial class ObjectManager : Node2D, IWorldPicker, IWheelHandler
 						RecordHistory($"掷骰 {string.Join("、", rolled)}");
 					break;
 				}
+
+			// ---- 计数器（M5.5 P4）----
+			//
+			// 四个加减项与「上限」子菜单都走 <see cref="ChangeSelectedStats"/> ——
+			// 与轻点那条路共用同一条改数值 + 记历史的实现，
+			// 免得"轻点能撤、菜单不能撤"这种两套行为分叉。
+			case MenuId.StatPlus:
+				ChangeSelectedStats(GameConfig.StatStep);
+				break;
+			case MenuId.StatMinus:
+				ChangeSelectedStats(-GameConfig.StatStep);
+				break;
+			case MenuId.StatPlusBig:
+				ChangeSelectedStats(GameConfig.StatBigStep);
+				break;
+			case MenuId.StatMinusBig:
+				ChangeSelectedStats(-GameConfig.StatBigStep);
+				break;
 		}
+	}
+
+	/// <summary>
+	/// 给选中的计数器加减数值，并记一条历史。
+	///
+	/// <b>它是"改数值"的唯一实现</b>：轻点（<see cref="OnStatClicked"/>）与右键菜单
+	/// 都调它。分成两份的下场是"轻点撤得掉、菜单撤不掉"这类不对称 bug，
+	/// 而那种 bug 只有用户按 Ctrl+Z 时才会发现。
+	/// </summary>
+	private void ChangeSelectedStats(int delta)
+	{
+		var changed = new List<StatObject>();
+
+		foreach (TabletopObject obj in _selection)
+		{
+			if (obj is StatObject stat && stat.AddCurrent(delta))
+				changed.Add(stat);
+		}
+
+		if (changed.Count == 0)
+			return;   // 没有净变化就不记历史（与"空操作不进历史"同一条规矩）
+
+		StatObject first = changed[0];
+		string label = changed.Count == 1
+			? $"{first.Data.Label} {(delta > 0 ? "+" : "")}{delta}（现在 {first.Data.Current}/{first.Data.Max}）"
+			: $"{changed.Count} 个计数器 {(delta > 0 ? "+" : "")}{delta}";
+
+		RecordHistory(label);
+	}
+
+	/// <summary>把选中计数器的上限改成 <paramref name="max"/>（菜单里的预设值）。</summary>
+	private void ApplyStatMax(int max)
+	{
+		var changed = new List<StatObject>();
+
+		foreach (TabletopObject obj in _selection)
+		{
+			if (obj is StatObject stat && stat.SetMax(max))
+				changed.Add(stat);
+		}
+
+		if (changed.Count == 0)
+			return;
+
+		RecordHistory(changed.Count == 1
+			? $"{changed[0].Data.Label} 上限改为 {max}"
+			: $"{changed.Count} 个计数器的上限改为 {max}");
 	}
 
 	private void ApplyDiceSides(int sides)
