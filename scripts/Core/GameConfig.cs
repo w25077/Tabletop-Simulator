@@ -130,4 +130,16 @@ public static class GameConfig
 
 	/// <summary>区域名称文字色。</summary>
 	public static readonly Color ZoneTitleColor = new("#e5e9f0");
+
+	/// <summary>
+	/// 「改大小」把手的填充色（M5.5 P2-4b）。用亮黄 —— 与"会被改"的描边语义一致
+	/// （见 <c>docs/HANDOFF.md</c> 第 5 条：亮黄 = 会被改，暗黄 = 仅选中）。
+	/// </summary>
+	public static readonly Color ZoneHandleColor = new("#ebcb8b");
+
+	/// <summary>把手被指着时的颜色（更亮，给出"这一下会拖它"的预期）。</summary>
+	public static readonly Color ZoneHandleHotColor = new("#fff4d6");
+
+	/// <summary>把手的边长（世界单位）。比边框宽，才点得中。</summary>
+	public const float ZoneHandleSize = 16f;
 }

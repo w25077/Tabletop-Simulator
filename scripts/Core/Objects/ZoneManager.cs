@@ -35,6 +35,9 @@ public partial class ZoneManager : Node2D, IZoneInteraction
 		SelectAllInZone,
 		ToggleEnabled,
 
+		/// <summary>删除这块区域（M5.5 P2-4c）。与其它项隔一段编号，免得以后插项串号。</summary>
+		DeleteZone = 50,
+
 		/// <summary>标题行（禁用状态的纯展示项）。</summary>
 		Header = 900,
 	}
@@ -208,9 +211,18 @@ public partial class ZoneManager : Node2D, IZoneInteraction
 		EmitZoneCounts();
 	}
 
+	/// <summary>
+	/// 按 id 找区域；不在（已被删掉）时返回 <c>null</c>。
+	///
+	/// <c>ZoneResizer</c> 存的是 <b>id 而不是引用</b>：一次拖拽可能跨越"区域被删掉"
+	/// 这件事（撤销、或用户在面板里删了它），留一个已释放节点的引用会在下一次
+	/// <c>ApplyLayout</c> 时炸掉 —— 这正是 <c>ForgetObjects</c> 那条注释里说过的坑。
+	/// 每次取用现查一遍，代价可以忽略。
+	/// </summary>
+	public Zone? FindById(string id) => _zones.TryGetValue(id, out Zone? zone) ? zone : null;
+
 	/// <summary>按类型找第一个区域（例：双击牌库时找"手牌"在哪）。</summary>
-	public Zone? FirstOfKind(ZoneKind kind)
-	{
+	public Zone? FirstOfKind(ZoneKind kind)	{
 		foreach (Zone z in _order)
 		{
 			if (z.Kind == kind)
@@ -697,6 +709,15 @@ public partial class ZoneManager : Node2D, IZoneInteraction
 		AddItem("选中此区域全部", MenuId.SelectAllInZone, zone.Count > 0);
 		_menu.AddSeparator();
 		AddItem(zone.Definition.Enabled ? "锁定此区域" : "解锁此区域", MenuId.ToggleEnabled, true);
+
+		// ---- 删除（M5.5 P2-4c）----
+		//
+		// 用户实测反馈第 4 条里有"区域不能删除" —— 而<b>功能其实是有的</b>，
+		// 只是入口藏在「区域」页左下角那个按钮里，他没找到。
+		// 右键菜单是他已经在用的地方（锁定 / 摊开都在这儿），所以把入口挪一份过来。
+		// 剩下那个按钮保留：两条路都通，比"猜哪条才是正道"好。
+		_menu.AddSeparator();
+		AddItem("删除此区域", MenuId.DeleteZone, zone.Count == 0);
 	}
 
 	/// <summary>加一项。用 <c>AddItem</c> 返回的下标直接禁用，
@@ -779,6 +800,10 @@ public partial class ZoneManager : Node2D, IZoneInteraction
 				zone.QueueRedraw();
 				_hud?.Toast(zone.Definition.Enabled ? $"{zone.DisplayName} 已解锁" : $"{zone.DisplayName} 已锁定");
 				break;
+
+			case MenuId.DeleteZone:
+				DeleteZoneFromMenu(zone);
+				break;
 		}
 
 		EmitZoneCounts();
@@ -792,6 +817,46 @@ public partial class ZoneManager : Node2D, IZoneInteraction
 			Undo?.Record(label);
 		}
 	}
+
+	/// <summary>
+	/// 右键菜单里的「删除此区域」（M5.5 P2-4c）。
+	///
+	/// <b>它必须能被 Ctrl+Z 退回来。</b>删除走 <see cref="RemoveZone"/>，
+	/// 而区域定义在 <c>SceneSnapshot</c> 里 —— 一次撤销就会把它连同
+	/// 矩形的样子一起重建出来。所以这里记一条历史就够，不需要另写逆操作
+	/// （M4 那条"撤销不是反向操作、是把快照写回去"的约定在这里同样成立）。
+	///
+	/// 闸门仍然留着：区域里还有东西就拒绝，并说清有几件。
+	/// <b>菜单项本身也会被禁用</b>，所以正常路径下点不到它；
+	/// 这一层是防"菜单弹出来之后区域内容变了"那类时序。
+	/// </summary>
+	private void DeleteZoneFromMenu(Zone zone)
+	{
+		string name = zone.DisplayName;
+		string zoneId = zone.Id;
+
+		if (!ZoneEditService.Delete(this, zone))
+		{
+			_hud?.Toast(ZoneEditService.LastError);
+			return;
+		}
+
+		_menuLabel = "";    // 已经在下面记过一条，别让收口那行再记一次
+		RecordHistory($"删除区域「{name}」");
+		_hud?.Toast($"已删除区域「{name}」（Ctrl+Z 可撤回）");
+
+		// 诊断：把"被删的是谁"也写进只读计数器。
+		// 它会救一次命 —— 本轮探针里菜单明明是按靶子建的，删掉的却是另一块区域，
+		// 而报告里只有一句"撤销之后区域没回来"，读不出被删的是谁。
+		LastDeletedZoneId = zoneId;
+		LastDeletedZoneLabel = $"「{name}」 kind={zone.Kind}";
+	}
+
+	/// <summary>右键菜单里最后一次成功删除的区域 id（只读诊断；没删过则为空串）。</summary>
+	public string LastDeletedZoneId { get; private set; } = "";
+
+	/// <summary>同上，附带当时读到的显示名与类型（用来分辨"删错了"与"名字是别的"）。</summary>
+	public string LastDeletedZoneLabel { get; private set; } = "";
 
 	/// <summary>区域菜单项的中文描述。取不到时返回空串（表示"这一项不改状态"）。</summary>
 	private static string MenuLabelFor(int menuId, Zone zone) => (MenuId)menuId switch

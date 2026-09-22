@@ -63,6 +63,109 @@ public partial class Zone : Node2D
 
 	public TabletopObject? Bottom => Members.Count > 0 ? Members[0] : null;
 
+	/// <summary>
+	/// 是否显示"改大小"的把手（M5.5 P2-4b）。
+	///
+	/// 由 <c>ZoneResizer</c> 按"编辑器开着、且在『区域』页"来设置 ——
+	/// 平时不显示：桌上所有区域都挂着八个把手会很吵，而它们是编辑期的东西。
+	/// </summary>
+	public bool HandlesVisible { get; internal set; }
+
+	/// <summary>鼠标正指着哪个把手（<see cref="ZoneHandle.None"/> = 没指着）。只影响绘制。</summary>
+	public ZoneHandle HoveredHandle { get; internal set; }
+
+	/// <summary>
+	/// 分辨率无关的把手命中半径（<b>世界单位</b>）。
+	///
+	/// 调用方（<c>ZoneResizer</c>）会按当前缩放把它换算成"屏幕上大约 10px"，
+	/// 所以这里给的是世界单位下的基准值 —— 与 <see cref="GameConfig.ZonePadding"/>
+	/// 同一量级，比边框本身宽，才点得中。
+	/// </summary>
+	public const float HandleRadius = 18f;
+
+	// ------------------------------------------------------------------ 改大小的把手（P2-4b）
+
+	/// <summary>
+	/// 八个把手之一。<b>数值是按位用的</b>：左/上改矩形原点，右/下改尺寸，
+	/// 所以"这个把手要动哪条边"可以直接 <c>&amp;</c> 出来，不必写八条 if。
+	/// </summary>
+	[System.Flags]
+	public enum ZoneHandle
+	{
+		None = 0,
+		Left = 1,
+		Right = 2,
+		Top = 4,
+		Bottom = 8,
+
+		TopLeft = Left | Top,
+		TopRight = Right | Top,
+		BottomLeft = Left | Bottom,
+		BottomRight = Right | Bottom,
+	}
+
+	/// <summary>
+	/// 命中测试：世界点是否落在某个把手上。
+	///
+	/// 判据是"贴着矩形边框"而不是"在某个小方块里" —— 后者要求用户精确点到
+	/// 一个 18 单位的小方块，而屏幕上那可能只有几像素。贴着边就算命中更宽容，
+	/// 也让"沿着边框整条都能拖"成为直觉。
+	/// </summary>
+	/// <param name="world">世界坐标。</param>
+	/// <param name="tolerance">额外容差（世界单位；调用方按缩放换算）。</param>
+	public ZoneHandle HitHandle(Vector2 world, float tolerance)
+	{
+		Rect2 rect = Definition.Rect;
+		float r = HandleRadius + tolerance;
+
+		bool nearLeft = Mathf.Abs(world.X - rect.Position.X) <= r;
+		bool nearRight = Mathf.Abs(world.X - rect.End.X) <= r;
+		bool nearTop = Mathf.Abs(world.Y - rect.Position.Y) <= r;
+		bool nearBottom = Mathf.Abs(world.Y - rect.End.Y) <= r;
+
+		// 必须<b>同时</b>贴着一条竖边和一条横边以内的范围：
+		// 只判"贴着竖边"的话，矩形上下之外很远的同一条竖线上也会被算成把手。
+		bool withinX = world.X >= rect.Position.X - r && world.X <= rect.End.X + r;
+		bool withinY = world.Y >= rect.Position.Y - r && world.Y <= rect.End.Y + r;
+
+		if (!withinX || !withinY)
+			return ZoneHandle.None;
+
+		ZoneHandle handle = ZoneHandle.None;
+
+		if (nearLeft)
+			handle |= ZoneHandle.Left;
+		else if (nearRight)
+			handle |= ZoneHandle.Right;
+
+		if (nearTop)
+			handle |= ZoneHandle.Top;
+		else if (nearBottom)
+			handle |= ZoneHandle.Bottom;
+
+		return handle;
+	}
+
+	/// <summary>八个把手的屏幕无关位置（世界坐标）；绘制与自检共用一份，免得两处各算一遍。</summary>
+	public Vector2[] HandlePositions()
+	{
+		Rect2 rect = Definition.Rect;
+		float cx = rect.Position.X + (rect.Size.X * 0.5f);
+		float cy = rect.Position.Y + (rect.Size.Y * 0.5f);
+
+		return new[]
+		{
+			new Vector2(rect.Position.X, rect.Position.Y),          // 左上
+			new Vector2(cx, rect.Position.Y),                       // 上中
+			new Vector2(rect.End.X, rect.Position.Y),               // 右上
+			new Vector2(rect.End.X, cy),                            // 右中
+			new Vector2(rect.End.X, rect.End.Y),                    // 右下
+			new Vector2(cx, rect.End.Y),                            // 下中
+			new Vector2(rect.Position.X, rect.End.Y),               // 左下
+			new Vector2(rect.Position.X, cy),                       // 左中
+		};
+	}
+
 	[Signal] public delegate void MembersChangedEventHandler(int count);
 
 	/// <summary>注入定义。必须在 <c>AddChild</c> 之前调用。</summary>
@@ -383,6 +486,38 @@ public partial class Zone : Node2D
 		DrawRect(rect, new Color(border.R, border.G, border.B, alpha), false, GameConfig.ZoneBorderWidth);
 
 		DrawTitle(rect);
+
+		if (HandlesVisible)
+			DrawHandles(rect);
+	}
+
+	/// <summary>
+	/// 画八个"改大小"的把手（四角 + 四边中点）。
+	///
+	/// 为什么四边中点的也要画：只给四角的话，用户想"只改宽度"就得先猜
+	/// "拖右下角会不会同时改高度"。中点把手让"只动这一条边"变成看得见的能力。
+	///
+	/// 被指着的那一个画成亮色 —— 与桌面上物件的"亮黄 = 会被改"是同一套语义。
+	/// </summary>
+	private void DrawHandles(Rect2 rect)
+	{
+		float half = GameConfig.ZoneHandleSize * 0.5f;
+		Vector2[] positions = HandlePositions();
+		ZoneHandle[] which =
+		{
+			ZoneHandle.TopLeft, ZoneHandle.Top, ZoneHandle.TopRight, ZoneHandle.Right,
+			ZoneHandle.BottomRight, ZoneHandle.Bottom, ZoneHandle.BottomLeft, ZoneHandle.Left,
+		};
+
+		for (int i = 0; i < positions.Length; i++)
+		{
+			Color fill = which[i] == HoveredHandle && HoveredHandle != ZoneHandle.None
+				? GameConfig.ZoneHandleHotColor
+				: GameConfig.ZoneHandleColor;
+
+			DrawRect(new Rect2(positions[i] - new Vector2(half, half),
+				new Vector2(GameConfig.ZoneHandleSize, GameConfig.ZoneHandleSize)), fill);
+		}
 	}
 
 	private void DrawTitle(Rect2 rect)

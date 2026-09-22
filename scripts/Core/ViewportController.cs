@@ -37,6 +37,15 @@ public partial class ViewportController : Node
 	/// <summary>滚轮优先拦截器（例如 Alt+滚轮旋转物件）；为空或返回 false 时滚轮归相机缩放。</summary>
 	public IWheelHandler? WheelHandler { get; set; }
 
+	/// <summary>
+	/// 左键拖拽的"被问"钩子（M5.5 P2：区域边框改大小）。
+	///
+	/// 与 <see cref="WheelHandler"/> 同一个套路：<b>先问，再由它决定要不要接管</b>。
+	/// 它是本项目"输入只有一处入口"那条约定的延续 ——
+	/// 编辑器不该为了拖一下区域边框就去抢 <c>_UnhandledInput</c>。
+	/// </summary>
+	public IPrimaryPressHook? PrimaryPressHook { get; set; }
+
 	private BoardCamera _camera = null!;
 	private Board _board = null!;
 
@@ -170,6 +179,19 @@ public partial class ViewportController : Node
 		MouseButtonEvents++;
 		Vector2 screen = mb.Position;
 
+		// 钩子正在接管时，左键的移动与松手都归它 —— 走的是<b>同一条分发路径</b>，
+		// 只是目的地换了一个（见 IPrimaryPressHook 的说明）。
+		if (PrimaryPressHook is { IsPrimaryDragActive: true } hook && mb.ButtonIndex == MouseButton.Left)
+		{
+			if (mb.Pressed)
+				hook.PrimaryDragTo(_camera.ScreenToWorld(screen));
+			else
+				hook.EndPrimaryDrag();
+
+			Consume();
+			return;
+		}
+
 		if (mb.Pressed)
 			HandlePress(mb, screen);
 		else
@@ -205,6 +227,15 @@ public partial class ViewportController : Node
 		// ---- 左键：可能拖物件，也可能只是点空白 ----
 		if (mb.ButtonIndex == MouseButton.Left)
 		{
+			// 先问"被问"钩子（区域边框改大小）。它说接管就不再起拖拽手势 ——
+			// 否则改大小的同时会把桌面上那张牌一起拖走。
+			if (PrimaryPressHook is not null
+				&& PrimaryPressHook.TryBeginPrimaryDrag(_camera.ScreenToWorld(screen), screen))
+			{
+				Consume();
+				return;
+			}
+
 			BeginGesture(Gesture.PrimaryPending, mb.ButtonIndex, screen);
 			_pressedTarget = Picker?.PickTopmost(_camera.ScreenToWorld(screen));
 			if (_pressedTarget is not null)
@@ -272,6 +303,16 @@ public partial class ViewportController : Node
 	private void HandleMouseMotion(InputEventMouseMotion mm)
 	{
 		Vector2 world = _camera.ScreenToWorld(mm.Position);
+
+		// 钩子接管期间只喂它，不发普通的 PointerMoved ——
+		// 否则改大小的同时，桌面上的悬停/选中还在跟着变。
+		if (PrimaryPressHook is { IsPrimaryDragActive: true } hook)
+		{
+			hook.PrimaryDragTo(world);
+			Consume();
+			return;
+		}
+
 		EmitSignal(SignalName.PointerMoved, world);
 
 		if (_gesture == Gesture.None)

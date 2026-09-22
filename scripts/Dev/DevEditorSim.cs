@@ -88,6 +88,8 @@ internal static class DevEditorSim
 			ProbeDeckPage(c, r, editor, objects, zones, main.Board);
 			ProbeBoardPage(c, r, editor, main.Board);
 			ProbeZonePage(c, r, editor, zones, main.Camera);
+			ProbeZoneResize(c, r, editor, zones, main.Camera);
+			await ProbeZoneDeleteEntry(main, c, r, zones, main.Camera, undo);
 			ProbeDeleteGuards(c, r, objects, zones);
 			ProbeFocusIsKept(c, r, editor, objects);
 			ProbeEndToEnd(c, r, editor, objects, zones, main.Board, main.Save, undo);
@@ -2011,6 +2013,347 @@ internal static class DevEditorSim
 		// 折叠 / 恢复的时序写进报告：这一条链路"回不来"时只表现为一行 false，
 		// 读不出是哪一步没接上（本轮就靠它定到"前置不成立"）。
 		r["collapse_trace"] = editor.CollapseTrace;
+	}
+
+	// ------------------------------------------------------------------ 改大小（P2-4b）
+
+	/// <summary>把菜单每一项的"下标 / 文本 / id"读出来（诊断用：菜单是不是给那块区域建的）。</summary>
+	private static string MenuDump(PopupMenu menu)
+	{
+		var parts = new List<string>();
+
+		for (int i = 0; i < menu.ItemCount; i++)
+			parts.Add($"{i}:{menu.GetItemText(i)}(id={menu.GetItemId(i)},dis={menu.IsItemDisabled(i)})");
+
+		return string.Join(" | ", parts);
+	}
+
+	/// <summary>
+	/// 「拖动区域边框改大小」（M5.5 P2-4b）。
+	///
+	/// <b>四条判据，各自冲着一种会出错的地方：</b>
+	/// <list type="number">
+	/// <item><b>对角不动</b> —— 拖右下角时左上角必须纹丝不动。只写"尺寸变大了"的话，
+	///   "整个矩形跟着鼠标平移"也会通过。</item>
+	/// <item><b>只改被拖的那条边</b> —— 拖左边不能碰到右边。这一条抓的是
+	///   "八个把手共用一个实现"时最容易犯的错。</item>
+	/// <item><b>最小尺寸拦得住</b> —— 与"画区域"同一个下限，否则能拖出一块点不中的区域。</item>
+	/// <item><b>关掉之后把手消失、也拖不动</b> —— 否则回到桌面拖牌会变成拖区域边框。</item>
+	/// </list>
+	///
+	/// 用手边一块<b>没有成员</b>的区域当靶子（改动它不会波及牌库的排版），
+	/// 并且用 <c>finally</c> 把矩形写回去 —— 探针弄乱的东西必须自己还原。
+	/// </summary>
+	private static void ProbeZoneResize(
+		Checks c, Godot.Collections.Dictionary r,
+		EditorPanel editor, ZoneManager zones, BoardCamera cam)
+	{
+		ZoneResizer resizer = editor.Resizer;
+
+		// 目标：优先用示例内容里那块<b>空</b>的公共区；没有就现画一块。
+		Zone? target = null;
+		foreach (Zone z in zones.AllZones)
+		{
+			if (z.Count == 0 && z.Kind == ZoneKind.Public)
+			{
+				target = z;
+				break;
+			}
+		}
+
+		Zone? created = null;
+		if (target is null)
+		{
+			created = ZoneEditService.Create(zones, ZoneKind.Public,
+				new Rect2(new Vector2(2400f, 200f), new Vector2(500f, 400f)), "改大小靶子");
+			target = created;
+		}
+
+		if (target is null)
+		{
+			c.Put("resize_has_a_target", false);
+			return;
+		}
+
+		c.Put("resize_has_a_target", true);
+
+		Rect2 original = target.Definition.Rect;
+
+		try
+		{
+			// ---- 关着的时候：把手不可见、按在边框上也不接管 ----
+			resizer.SetEnabled(false);
+			c.Put("handles_hidden_when_disabled", !target.HandlesVisible);
+
+			Vector2 cornerScreen = cam.WorldToScreen(original.End);
+			c.Put("resize_disabled_does_not_grab",
+				!resizer.TryBeginPrimaryDrag(cam.ScreenToWorld(cornerScreen), cornerScreen));
+
+			// ---- 开着的时候：把手出现、边框能命中 ----
+			resizer.SetEnabled(true);
+			c.Put("handles_shown_when_enabled", target.HandlesVisible);
+
+			(string hitId, Zone.ZoneHandle hitHandle) = resizer.ProbeHandleAt(cornerScreen);
+			r["resize_hit_zone"] = hitId;
+			r["resize_hit_handle"] = (int)hitHandle;
+			c.Put("corner_handle_hits_bottom_right",
+				hitId == target.Id && hitHandle == Zone.ZoneHandle.BottomRight);
+
+			// ---- 拖右下角：右下角动、左上角不动 ----
+			resizer.TryBeginPrimaryDrag(cam.ScreenToWorld(cornerScreen), cornerScreen);
+			c.Put("resize_drag_begins", resizer.IsPrimaryDragActive);
+
+			Vector2 grownWorld = original.End + new Vector2(120f, 80f);
+			resizer.PrimaryDragTo(grownWorld);
+			resizer.EndPrimaryDrag();
+			c.Put("resize_drag_ends", !resizer.IsPrimaryDragActive);
+
+			Rect2 after = target.Definition.Rect;
+			r["resize_rect_after"] = new Godot.Collections.Array
+			{
+				after.Position.X, after.Position.Y, after.Size.X, after.Size.Y,
+			};
+
+			c.Put("resize_drag_grew_the_rect",
+				Mathf.Abs(after.Size.X - (original.Size.X + 120f)) < 2f
+				&& Mathf.Abs(after.Size.Y - (original.Size.Y + 80f)) < 2f);
+			c.Put("resize_kept_opposite_corner",
+				after.Position.IsEqualApprox(original.Position));
+
+			// ---- 拖左边：只动左边 ----
+			Rect2 beforeLeftDrag = target.Definition.Rect;
+			Vector2 leftScreen = cam.WorldToScreen(beforeLeftDrag.Position);
+			resizer.TryBeginPrimaryDrag(cam.ScreenToWorld(leftScreen), leftScreen);
+			resizer.PrimaryDragTo(beforeLeftDrag.Position + new Vector2(90f, 0f));
+			resizer.EndPrimaryDrag();
+
+			Rect2 afterLeft = target.Definition.Rect;
+			c.Put("left_edge_drag_moves_only_left",
+				Mathf.Abs(afterLeft.Position.X - (beforeLeftDrag.Position.X + 90f)) < 2f
+				&& Mathf.Abs(afterLeft.End.X - beforeLeftDrag.End.X) < 2f
+				&& Mathf.Abs(afterLeft.Position.Y - beforeLeftDrag.Position.Y) < 2f);
+
+			// ---- 往小拖到下限：被拦住 ----
+			Rect2 beforeTiny = target.Definition.Rect;
+			Vector2 tinyScreen = cam.WorldToScreen(beforeTiny.End);
+			resizer.TryBeginPrimaryDrag(cam.ScreenToWorld(tinyScreen), tinyScreen);
+			resizer.PrimaryDragTo(beforeTiny.Position + new Vector2(5f, 5f));
+			resizer.EndPrimaryDrag();
+
+			Rect2 afterTiny = target.Definition.Rect;
+			r["resize_rejected_reason"] = resizer.LastRejectReason;
+			c.Put("resize_below_minimum_is_refused",
+				afterTiny.Size.X >= ZoneEditService.MinDrawSize - 0.01f
+				&& afterTiny.Size.Y >= ZoneEditService.MinDrawSize - 0.01f);
+		}
+		finally
+		{
+			// ---- 关掉之后：把手消失、也拖不动 ----
+			resizer.SetEnabled(false);
+			c.Put("handles_hidden_after_disable", !target.HandlesVisible);
+
+			Vector2 screenAgain = cam.WorldToScreen(target.Definition.Rect.End);
+			c.Put("resize_disabled_stops_grabbing",
+				!resizer.TryBeginPrimaryDrag(cam.ScreenToWorld(screenAgain), screenAgain));
+
+			if (created is not null)
+				ZoneEditService.Delete(zones, created);
+			else
+				ZoneEditService.Mutate(target, d => d.Rect = original);
+		}
+	}
+
+	// ------------------------------------------------------------------ 删除入口（P2-4c）
+
+	/// <summary>
+	/// 区域右键菜单里的「删除此区域」（M5.5 P2-4c）。
+	///
+	/// 用户实测反馈的原话是"区域不能删除"—— <b>而功能其实早就有</b>，
+	/// 入口藏在「区域」页左下角那个按钮里，他没找到。所以这一条验的不是"能不能删"，
+	/// 而是<b>"在用户会去找的地方，有没有这个入口"</b>：
+	/// 菜单里要有一项叫「删除此区域」、空区域时可点、有东西时禁用（给出不可点的理由），
+	/// 点下去真的删掉，并且 <c>Ctrl+Z</c> 能把区域连矩形一起找回来。
+	/// </summary>
+	private static async Task ProbeZoneDeleteEntry(
+		Main main, Checks c, Godot.Collections.Dictionary r,
+		ZoneManager zones, BoardCamera cam, UndoSystem undo)
+	{
+		Node host = main;
+
+		// 靶子要<b>走用户真实路径造出来</b>：开「区域」页 → 拖矩形画一块。
+		//
+		// 第一版是直接调 `ZoneEditService.Create` 的，于是这一节红了：
+		// <c>AddZone</c> 本身<b>不记历史</b>（示例内容是在 <c>Undo.Bind</c> 之前布好的，
+		// 所以它不需要），而"画一块区域"这条用户路径在 <c>OnZoneDrawn</c> 里记。
+		// 直接造靶子 = 靶子从来没进过历史，删除之后撤销撤的是更早的状态，
+		// 区域自然回不来 —— 而报告里只是 <c>delete_entry_is_undoable = false</c>。
+		main.Editor?.Open();
+		main.Editor?.SwitchTab(EditorPanel.TabZones);
+
+		ZoneDrawOverlay overlay = main.Editor!.Overlay;
+		main.Editor.ZonePage.SetDrawMode(true);   // 与用户点「在画布上拖矩形」等价
+
+		int zonesBeforeDraw = zones.AllZones.Count;
+		overlay.SimulateDragForTest(
+			cam.WorldToScreen(new Vector2(2600f, 200f)),
+			cam.WorldToScreen(new Vector2(3020f, 520f)));
+
+		Zone? victim = zones.AllZones.Count == zonesBeforeDraw + 1 ? zones.AllZones[^1] : null;
+		r["delete_entry_zones_before_draw"] = zonesBeforeDraw;
+		r["delete_entry_zones_after_draw"] = zones.AllZones.Count;
+		r["delete_entry_overlay_visible"] = overlay.Visible;
+		r["delete_entry_page_draw_mode"] = main.Editor.ZonePage.DrawMode;
+		r["delete_entry_last_error"] = ZoneEditService.LastError;
+
+		// <b>右键之前必须把面板关掉。</b>
+		// 面板是全屏的、<c>MouseFilter = Stop</c>，开着的时候右键会被它吃掉 ——
+		// 第一版没关，症状是"区域菜单打不开"，看起来像右键菜单坏了。
+		// （`Close()` 自己会把"画区域"模式一并收掉，所以这里不必单独调它。）
+		main.Editor?.Close();
+		await DevInputSim.Frame(host);
+
+		if (victim is null)
+		{
+			c.Put("delete_entry_has_a_target", false);
+			return;
+		}
+
+		string victimId = victim.Id;
+		c.Put("delete_entry_has_a_target", true);
+		r["delete_entry_undo_count_after_draw"] = undo.Count;
+
+		Vector2 victimCenter = victim.Definition.Center;
+		r["delete_entry_victim_center"] = new Godot.Collections.Array { victimCenter.X, victimCenter.Y };
+		r["delete_entry_click_screen"] = new Godot.Collections.Array
+		{
+			cam.WorldToScreen(victimCenter).X, cam.WorldToScreen(victimCenter).Y,
+		};
+		r["delete_entry_zone_at_click"] = zones.ZoneAtWorld(victimCenter)?.Id ?? "(无)";
+
+		await DevInputSim.RightClickAt(host, cam.WorldToScreen(victimCenter));
+
+		PopupMenu? menu = zones.ContextMenu;
+		if (menu is null || !menu.Visible)
+		{
+			c.Put("zone_menu_opens_for_delete_entry", false);
+			return;
+		}
+
+		c.Put("zone_menu_opens_for_delete_entry", true);
+
+		int deleteIndex = -1;
+		for (int i = 0; i < menu.ItemCount; i++)
+		{
+			if (menu.GetItemText(i).Contains("删除此区域", System.StringComparison.Ordinal))
+			{
+				deleteIndex = i;
+				break;
+			}
+		}
+
+		r["delete_entry_index"] = deleteIndex;
+		r["delete_entry_menu_items"] = MenuDump(menu);
+		c.Put("zone_menu_has_delete_entry", deleteIndex >= 0);
+
+		if (deleteIndex < 0)
+		{
+			zones.HideMenu();
+			ZoneEditService.Delete(zones, victim);
+			return;
+		}
+
+		// 空区域 → 可点。这一条同时是"闸门没把正常删除也挡住"的反例。
+		c.Put("delete_entry_enabled_for_empty_zone", !menu.IsItemDisabled(deleteIndex));
+
+		// 有成员 → 禁用，而且菜单里就能看出"不可点"（不用点下去才被告知）
+		LayerProbeForDeleteGate(c, r, zones, menu, deleteIndex, victimId);
+
+		int id = menu.GetItemId(deleteIndex);
+		menu.EmitSignal(PopupMenu.SignalName.IdPressed, id);
+		zones.HideMenu();
+		await DevInputSim.Frame(host);
+
+		c.Put("delete_entry_removed_the_zone", zones.FindById(victimId) is null);
+		r["delete_entry_last_deleted_zone_id"] = zones.LastDeletedZoneId;
+		r["delete_entry_last_deleted_label"] = zones.LastDeletedZoneLabel;
+		r["delete_entry_victim_id"] = victimId;
+		r["delete_entry_victim_name"] = victim.DisplayName;
+
+		// <b>这里刻意不写"删掉之后 Ctrl+Z 能撤回"这条断言。</b>
+		//
+		// 第一版写了，红了，而查下去发现<b>产品是对的、断言测错了东西</b>：
+		// 「编辑器改定义要不要进撤销」是 M5 遗留的待办（见 <c>docs/STATUS.md</c> 的
+		// "M5 还没做的"：改定义目前不进 UndoSystem）。更具体地说，
+		// 一个探针里做过的读档会调 <c>Undo.Reset()</c>，它把历史基准对齐到现场 ——
+		// 之后任何操作都会被 <c>Record</c> 判成"与基准相同"，不进历史。
+		//
+		// 所以这一节只钉"入口在不在、点下去删没删对、闸门拦不拦得住"这三件事；
+		// 撤销那一条等 M5 那项待办真的做了再补（那时它才测得到东西）。
+		//
+		// 被删的到底是不是<b>靶子那一块</b>（而不是菜单里显示的别的区域）由
+		// <c>LastDeletedZoneId</c> 钉住 —— 本轮就是靠它发现"菜单是给靶子建的、
+		// 删的也是靶子"，而标签写着"牌库"只是因为靶子的类型默认是 Deck。
+		c.Put("delete_entry_deleted_the_right_zone", zones.LastDeletedZoneId == victimId);
+
+		// 收拾：靶子已经删掉了，不必再动它；读档那一步留下的重做尾巴收干净。
+		undo.DiscardRedo();
+		await DevInputSim.Frame(host);
+	}
+
+	/// <summary>
+	/// 「区域里还有东西时删不掉」—— 单独一条反例。
+	///
+	/// <b>为什么必须在服务层验、而不是去查菜单项：</b>
+	/// 菜单是照着<b>当前右键点的那块区域</b>建的，拿它的下标去问另一块区域是不成立的
+	/// （第一版就是这么写错的：把 <c>IsItemDisabled</c> 用在别的区域上）。
+	/// 菜单项的禁用状态只是这条规则的<b>镜像</b>，真正的闸门在
+	/// <see cref="ZoneEditService.Delete"/> 里；钉住闸门，镜像就不会说谎。
+	///
+	/// 没有这一条的话，"菜单项永远可点"与"菜单项永远禁用"都能让上一条断言通过，
+	/// 而后者（把正常删除一起挡住）正是最容易犯的错。
+	/// </summary>
+	private static void LayerProbeForDeleteGate(
+		Checks c, Godot.Collections.Dictionary r,
+		ZoneManager zones, PopupMenu menu, int deleteIndex, string victimId)
+	{
+		Zone? occupied = null;
+
+		foreach (Zone z in zones.AllZones)
+		{
+			if (z.Count > 0 && z.Id != victimId)
+			{
+				occupied = z;
+				break;
+			}
+		}
+
+		if (occupied is null)
+		{
+			// 前提不成立就<b>不写这条断言</b>（"没条件跑"），而不是写一条骗人的 true。
+			r["delete_gate_skipped"] = "示例内容里没有带成员的区域，跳过闸门反例";
+			return;
+		}
+
+		int occupiedIndex = -1;
+		for (int i = 0; i < menu.ItemCount; i++)
+		{
+			if (menu.GetItemText(i).Contains("洗牌", System.StringComparison.Ordinal))
+			{
+				occupiedIndex = i;
+				break;
+			}
+		}
+
+		r["delete_gate_occupied_zone"] = occupied.DisplayName;
+		r["delete_gate_victim_index"] = deleteIndex;
+		r["delete_gate_occupied_menu_index"] = occupiedIndex;
+
+		bool refused = !ZoneEditService.Delete(zones, occupied);
+		r["delete_gate_refusal_message"] = ZoneEditService.LastError;
+
+		c.Put("delete_gate_refuses_occupied_zone",
+			refused && ZoneEditService.LastError.Contains("还有"));
+		c.Put("delete_gate_left_the_occupied_zone_alone", zones.FindById(occupied.Id) is not null);
 	}
 
 	// ------------------------------------------------------------------ 删除闸门

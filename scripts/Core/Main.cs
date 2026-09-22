@@ -137,7 +137,7 @@ public partial class Main : Node2D
 		//
 		// <b>Attach 之后必须显式 Initialize 一次</b>：面板的 _Ready 跑在 Main._Ready
 		// <b>之前</b>（Godot 是子节点先 _Ready），那时依赖还没塞进去。
-		Editor = EditorPanel.Attach(_hud, Objects, Zones, _board, _camera, _hud);
+		Editor = EditorPanel.Attach(_hud, Objects, Zones, _board, _camera, _hud, _viewport);
 		Editor.Initialize();
 
 		// 「保存」这个动作只有一条路：编辑器的保存按钮与 <c>Ctrl+S</c> 都走 <see cref="Save"/>。

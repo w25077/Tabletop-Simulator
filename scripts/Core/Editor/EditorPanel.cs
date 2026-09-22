@@ -206,7 +206,7 @@ public partial class EditorPanel : Control
 	/// </summary>
 	public static EditorPanel Attach(
 		CanvasLayer layer, ObjectManager objects, ZoneManager zones, Board board,
-		BoardCamera camera, Hud hud)
+		BoardCamera camera, Hud hud, ViewportController viewport)
 	{
 		EditorPanel panel = layer.GetNode<EditorPanel>("HudRoot/EditorPanel");
 
@@ -215,9 +215,19 @@ public partial class EditorPanel : Control
 		panel._board = board;
 		panel._camera = camera;
 		panel._hud = hud;
+		panel._viewport = viewport;
 
 		return panel;
 	}
+
+	/// <summary>
+	/// 「拖动区域边框改大小」（M5.5 P2-4b）。<b>这个对象是纯逻辑，不是节点</b> ——
+	/// 它按项目约定走 <c>ViewportController</c> 的"被问"接口拿事件，
+	/// 不需要进场景树，也就不存在"动态生成节点"的问题（见 HANDOFF 第 29 条）。
+	/// </summary>
+	public ZoneResizer Resizer { get; } = new();
+
+	private ViewportController _viewport = null!;
 
 	/// <summary>
 	/// <b>刻意不在 <c>_Ready</c> 里建界面 / 挂信号。</b>
@@ -241,6 +251,19 @@ public partial class EditorPanel : Control
 	public void Initialize()
 	{
 		Build();
+
+		// ---- 「改区域大小」的钩子接线（M5.5 P2-4b）----
+		//
+		// 钩子交给 ViewportController（"输入只有一处入口"），
+		// 鼠标移动订阅它自己的 PointerMoved 信号 —— 不另开一条输入路径。
+		Resizer.Bind(_zones, _camera);
+		_viewport.PrimaryPressHook = Resizer;
+		_viewport.PointerMoved += Resizer.NotifyPointerMoved;
+		_tabs.TabChanged += _ => SyncResizer();
+
+		// 区域是动态增删的（画一块 / 删一块 / 读档换一桌），所以"该不该有把手"
+		// 不能只在开关那一刻算一次 —— 开着编辑器新画一块，它的把手要立刻出现。
+		_zones.ZonesChanged += Resizer.SyncHandles;
 
 		// 整个面板建完之后才让各页刷一次。
 		//
@@ -459,6 +482,20 @@ public partial class EditorPanel : Control
 		RefreshStatus();
 		CurrentPage()?.OnShown();
 		_hud.SyncEditorButton(true);
+		SyncResizer();
+	}
+
+	/// <summary>
+	/// 把"改区域大小"的启用状态同步给 <see cref="Resizer"/>。
+	///
+	/// 判据是"编辑器开着<b>且停在「区域」页</b>"：把手与拖拽是编辑期的东西，
+	/// 平时待在别的页或关着编辑器时，桌面上冒出一圈黄方块只会让人以为桌子坏了。
+	/// 开关面板、切页、关面板三处都要调 —— 所以收成一个方法，而不是散在三处各写一遍。
+	/// </summary>
+	private void SyncResizer()
+	{
+		bool onZonesTab = CurrentPage() is ZoneEditorPage;
+		Resizer.SetEnabled(IsOpen && onZonesTab);
 	}
 
 	public void Close()
@@ -477,6 +514,7 @@ public partial class EditorPanel : Control
 		// 而画布上没有任何东西提示这件事 —— 表现为"拖拽突然不能拖牌了"。
 		_zonePage?.CancelDrawMode();
 		_hud.SyncEditorButton(false);
+		SyncResizer();   // 把手也跟着收掉（`IsOpen` 已经是 false，这里必然关）
 		GetViewport().SetInputAsHandled();
 	}
 
@@ -488,6 +526,7 @@ public partial class EditorPanel : Control
 
 		_tabs.CurrentTab = index;
 		CurrentPage()?.OnShown();
+		SyncResizer();
 	}
 
 	/// <summary>
