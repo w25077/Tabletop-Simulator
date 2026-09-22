@@ -53,7 +53,22 @@ public partial class EditorPanel : Control
 	private ZoneDrawOverlay _overlay = null!;
 
 	/// <summary>面板是否打开。<b>键盘快捷键的闸门看它。</b></summary>
-	public bool IsOpen => Visible;
+	/// <summary>
+	/// 面板是否<b>逻辑上</b>开着。
+	///
+	/// <b>它不等于 <c>Visible</c>，这是 M5.5 P2 用一次真 bug 换来的：</b>
+	/// 原先这里是 <c>IsOpen =&gt; Visible</c>，而 P2 要"画区域时把面板收起来"——
+	/// 于是收起面板（<c>Visible = false</c>）当场把 <see cref="IsOpen"/> 也变成了假，
+	/// <c>RestoreFromDrawMode</c> 里那句 <c>if (IsOpen)</c> 永远不成立，
+	/// <b>面板再也回不来</b>。症状是四条 <c>Esc</c> 断言全红，而 <c>Esc</c> 的逻辑本身没错。
+	///
+	/// 教训：一个属性一旦被两种语义共用（"用户开着它吗" vs "它现在画在屏幕上吗"），
+	/// 迟早会有一条路把它们拆开。所以拆开这件事要在需要之前就做掉。
+	/// </summary>
+	public bool IsOpen => _logicalOpen;
+
+	/// <summary>逻辑开关（由 <see cref="Open"/> / <see cref="Close"/> 维护）。</summary>
+	private bool _logicalOpen;
 
 	/// <summary>当前分页（自检用：确认 <c>SwitchTab</c> 真的切了）。</summary>
 	public int CurrentTab => _tabs.CurrentTab;
@@ -114,6 +129,69 @@ public partial class EditorPanel : Control
 
 	/// <summary>画区域的遮罩层（自检要直接驱动它，验"整条拖拽"而不只是服务方法）。</summary>
 	internal ZoneDrawOverlay Overlay => _overlay;
+
+	/// <summary>
+	/// 是否正为了"画区域"而把面板收起来（M5.5 P2）。
+	///
+	/// <b>为什么用"藏起来"而不是"关掉"：</b><see cref="IsOpen"/> 是<b>逻辑</b>开关，
+	/// 由 <c>F1</c> / 顶栏按钮 / <c>Esc</c> 决定；而"画区域时面板别挡着画布"是<b>视觉</b>状态。
+	/// 两者混在一起的话，收起面板就会被记成"用户关掉了编辑器" ——
+	/// 画完之后面板回不来，而且 <c>Esc</c> 的语义也跟着乱（第一次按应该退出画区域模式，
+	/// 而不是"关掉一个已经关掉的面板"）。
+	/// </summary>
+	internal bool CollapsedForDraw { get; private set; }
+
+	/// <summary>
+	/// 进入"画区域"模式时把面板收起来（用户实测反馈第 4 条：
+	/// "在画布上拖矩形点击后没有关闭当前 F1 界面，无法紧跟着划区域"）。
+	///
+	/// 面板实测量到的是 1904×996，几乎盖满屏幕 —— 不收起来的话，
+	/// 用户能画的只有面板之外的一圈，而"整个画布"听起来却不是那个意思。
+	///
+	/// 遮罩层之所以不受影响：它在场景里是 <c>HudRoot</c> 的<b>兄弟</b>节点
+	/// （不是面板的子节点），所以藏面板不会连带藏掉它。
+	/// </summary>
+	internal void CollapseForDrawMode()
+	{
+		if (CollapsedForDraw)
+			return;
+
+		CollapsedForDraw = true;
+		Visible = false;
+		CollapseTrace += $"[f{Engine.GetProcessFrames()} collapse open={IsOpen} vis={Visible}] ";
+	}
+
+	/// <summary>
+	/// 画完一块 / 退出模式时把面板放回来。
+	///
+	/// <see cref="CollapseTrace"/> 是这条链路专用的只读时序日志 ——
+	/// 它存在的理由与 M4 那几个计数器一样（"把猜换成读"）：这一条改动里，
+	/// "面板有没有回来"同时取决于折叠标志、逻辑开关、可见性三者，
+	/// 而"回不来"的症状在报告里只表现为一行 <c>false</c>，读不出是哪一步没接上。
+	/// </summary>
+	internal void RestoreFromDrawMode()
+	{
+		if (!CollapsedForDraw)
+		{
+			CollapseTrace += $"[f{Engine.GetProcessFrames()} restore-skip open={IsOpen} vis={Visible}] ";
+			return;
+		}
+
+		CollapsedForDraw = false;
+
+		// 只有"面板逻辑上就该开着"时才恢复 —— 用户在画区域途中按 F1 关掉编辑器的话，
+		// 收模式时不该把一个已被关掉的面板重新显示出来。
+		//
+		// 这里判的必须是 <see cref="IsOpen"/>（逻辑），不能是 <c>Visible</c>：
+		// 收起面板正是把 Visible 设成 false 的那一步。
+		if (IsOpen)
+			Visible = true;
+
+		CollapseTrace += $"[f{Engine.GetProcessFrames()} restore open={IsOpen} vis={Visible}] ";
+	}
+
+	/// <summary>折叠 / 恢复的时序（自检诊断用）。</summary>
+	internal string CollapseTrace { get; private set; } = "";
 
 	/// <summary>
 	/// 把场景里那个编辑器面板接上依赖并返回它。
@@ -295,18 +373,25 @@ public partial class EditorPanel : Control
 			return;
 		}
 
-		if (!Visible)
-			return;
-
-		// <b>`Esc` 排在"吃掉其余按键"之前。</b>
+		// <b>`Esc` 的判定要排在 `Visible` 早退之前。</b>
 		//
-		// 面板开着时后面那行会把所有按键标记为已处理，所以这个判断只要落在它后面，
-		// `Esc` 就永远轮不到关闭面板 —— 用户实测反馈第 1 条报的正是这件事。
+		// M5.5 P2 把"画区域"改成了<b>收起面板</b>（`Visible = false`），
+		// 而这一行原本是 `if (!Visible) return;` —— 于是收起的瞬间，
+		// `Esc` 就再也轮不到面板：症状是"按 Esc 退不出画区域模式"。
+		//
+		// 真实运行里遮罩层会在 `_Input` 里先兜住这一下（所以界面上还能用），
+		// 但那是"谁先被派发到"决定的，不该是两级退出语义的依靠 ——
+		// 自检直接喂 `_UnhandledKeyInput` 就把它抓出来了（四条断言全红）。
+		//
+		// 所以：逻辑上开着（`IsOpen`）就一直处理 `Esc`，并在处理时按需恢复可见性。
 		if (HandleEscape(key))
 		{
 			GetViewport().SetInputAsHandled();
 			return;
 		}
+
+		if (!Visible)
+			return;
 
 		// 面板开着时吃掉其余按键：否则在名称输入框里按 d 会抽牌、f 会翻面。
 		//
@@ -356,7 +441,7 @@ public partial class EditorPanel : Control
 
 	public void Toggle()
 	{
-		if (Visible)
+		if (IsOpen)
 			Close();
 		else
 			Open();
@@ -368,6 +453,7 @@ public partial class EditorPanel : Control
 		OpenTrace = $"[f{Engine.GetProcessFrames()} open={OpenCount} close={CloseCount} " +
 			$"wasOpen={IsOpen} vis={Visible} callers={string.Join(" < ", Callers())}] ";
 
+		_logicalOpen = true;
 		Visible = true;
 		_objects.ClearSelection();
 		RefreshStatus();
@@ -381,6 +467,10 @@ public partial class EditorPanel : Control
 		CloseTrace = $"[f{Engine.GetProcessFrames()} open={OpenCount} close={CloseCount} " +
 			$"from={string.Join(" < ", Callers())}] ";
 
+		// 逻辑开关先落下来，再收画区域模式 —— 顺序反了的话
+		// CancelDrawMode → RestoreFromDrawMode 会看到"面板还开着"而把它重新显示出来，
+		// 紧跟着这一行又把它藏掉：结果对，但中间闪一下。
+		_logicalOpen = false;
 		Visible = false;
 
 		// 关面板要把"画区域"那种模式收掉，否则回到桌面还是画矩形模式，

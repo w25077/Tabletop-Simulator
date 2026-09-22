@@ -64,6 +64,20 @@ public partial class ZoneDrawOverlay : Control
 		DragRect = null;
 		DragStart = null;
 
+		// <b>画区域时把面板收起来（M5.5 P2）。</b>
+		//
+		// 收起来的是<b>视觉</b>（面板藏了），而不是关掉编辑器 ——
+		// 见 EditorPanel.CollapsedForDraw 的说明。
+		//
+		// 这一条踩过一次坑：M5 时遮罩层曾经挂在<b>隐藏的</b>面板之下，
+		// 而"不可见 Control 的子树的布局会被跳过"，于是遮罩矩形恒为 0、收不到鼠标事件 ——
+		// 症状是"拖矩形什么都不发生"。所以隐藏面板之前必须先确认
+		// <b>遮罩层不是面板的子节点</b>（它在场景里是 HudRoot 的兄弟，已在 Main.tscn 里核对过）。
+		if (active)
+			_panel.CollapseForDrawMode();
+		else
+			_panel.RestoreFromDrawMode();
+
 		// 光标是"现在是画区域模式"的第二条持续提示（第一条是那层淡色遮罩）。
 		// 退出时<b>必须还原</b>，否则回到桌面还得拖牌，而光标还停在十字上。
 		//

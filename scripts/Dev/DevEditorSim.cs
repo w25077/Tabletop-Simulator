@@ -1900,6 +1900,17 @@ internal static class DevEditorSim
 		ZoneDrawOverlay overlay = editor.Overlay;
 		ZoneEditorPage page = editor.ZonePage;
 
+		// <b>自己摆好前置条件：面板必须是开着的。</b>
+		//
+		// 这一节要验"画区域时面板收起来、画完回来"，而它跑在这一串探针的中段 ——
+		// 前面 <c>ProbeEntryPoints</c> 收尾时把面板关掉了（它验的是开关）。
+		// 不加这一句的话，断言读到的是"面板本来就是关的"，
+		// 于是把"前置不成立"误报成"产品没把面板还回来"——这一轮就是这么红了两条。
+		//
+		// 规矩与 M4 那条一致：<b>断言的前置不成立时，要能一眼看出来</b>，
+		// 而不是让它伪装成产品缺陷。
+		editor.Open();
+
 		int drawnBefore = overlay.CreatedCount;
 		int zonesBefore = zones.AllZones.Count;
 
@@ -1953,24 +1964,53 @@ internal static class DevEditorSim
 				rect.Position.X, rect.Position.Y, rect.Size.X, rect.Size.Y,
 			};
 
-			// 画完要选中新建的那块，并退出模式 —— 不退的话下一次点击又会画一块，
-			// 而用户以为自己只是在"选中区域"
 			c.Put("drawn_zone_is_selected", page.SelectedZoneId == created.Id);
-			c.Put("draw_mode_exits_after_draw", !page.DrawMode && !overlay.Visible);
 
-			ZoneEditService.Delete(zones, created);
+			// <b>画完要留在画区域模式里（M5.5 P2，用户拍板"连画"）。</b>
+			//
+			// 这条断言原来是反的（"画完退出模式"）—— P2 之前的行为是
+			// "一次拖拽 = 一块区域，画完就退"。用户实测反馈的原话是
+			// "无法紧跟着划区域"，所以判据跟着需求改：<b>改断言、不改产品</b>。
+			c.Put("draw_mode_stays_on_after_draw", page.DrawMode && overlay.Visible);
+
+			// 面板此时应该是<b>收起来</b>的：不收的话它挡着大半个画布，
+			// "紧跟再画一块"仍然要绕开面板。
+			c.Put("editor_panel_stays_collapsed_while_drawing", editor.CollapsedForDraw && !editor.Visible);
+
+			// 连画第二块：不需要再点任何按钮
+			int zonesBeforeSecond = zones.AllZones.Count;
+			overlay.SimulateDragForTest(
+				cam.WorldToScreen(new Vector2(1200f, 1100f)),
+				cam.WorldToScreen(new Vector2(1500f, 1350f)));
+			c.Put("second_drag_draws_without_touching_the_button", zones.AllZones.Count == zonesBeforeSecond + 1);
+
+			// 收模式：面板必须回来（不回来的话用户以为编辑器被关掉了）
+			page.CancelDrawMode();
+			c.Put("panel_returns_after_draw_mode", !editor.CollapsedForDraw && editor.Visible && editor.IsOpen);
+
+			// 把连画出来的那两块收拾干净（探针弄乱的东西必须自己还原）
+			while (zones.AllZones.Count > zonesBefore)
+				ZoneEditService.Delete(zones, zones.AllZones[^1]);
 		}
 		else
 		{
 			c.Put("drawn_rect_matches_the_drag", false);
 			c.Put("drawn_zone_is_selected", false);
-			c.Put("draw_mode_exits_after_draw", false);
+			c.Put("draw_mode_stays_on_after_draw", false);
+			c.Put("editor_panel_stays_collapsed_while_drawing", false);
+			c.Put("second_drag_draws_without_touching_the_button", false);
+			c.Put("panel_returns_after_draw_mode", false);
 		}
 
-		// 取消模式也要收干净
+		// 取消模式也要收干净（并且把面板放回来）
 		page.SetDrawMode(true);
 		page.CancelDrawMode();
 		c.Put("cancel_draw_mode_hides_overlay", !page.DrawMode && !overlay.Visible);
+		c.Put("cancel_draw_mode_restores_panel", !editor.CollapsedForDraw && editor.Visible);
+
+		// 折叠 / 恢复的时序写进报告：这一条链路"回不来"时只表现为一行 false，
+		// 读不出是哪一步没接上（本轮就靠它定到"前置不成立"）。
+		r["collapse_trace"] = editor.CollapseTrace;
 	}
 
 	// ------------------------------------------------------------------ 删除闸门

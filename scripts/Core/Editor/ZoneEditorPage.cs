@@ -402,7 +402,7 @@ public partial class ZoneEditorPage : EditorPage
 			Objects.ClearSelection();
 
 		_overlay?.SetActive(on);
-		Hud.Toast(on ? "拖矩形画区域（Esc 或再点一次按钮取消）" : "已退出画区域模式");
+		Hud.Toast(on ? "拖矩形画区域（可连画，Esc 或再点一次按钮结束）" : "已退出画区域模式");
 	}
 
 	/// <summary>关面板 / 切页时收掉模式。<b>不收的话回到桌面会"突然拖不动牌了"。</b></summary>
@@ -419,20 +419,31 @@ public partial class ZoneEditorPage : EditorPage
 	}
 
 	/// <summary>
-	/// 遮罩层画完一块区域之后的收尾：选中它、退出模式、刷新三处列表。
+	/// 遮罩层画完一块区域之后的收尾：选中它、<b>留在画区域模式里</b>、刷新三处列表。
 	///
 	/// 放在页里而不是遮罩层里，是因为"画完要选中新建的那块"属于页的语义
 	/// （遮罩层只管几何与事件）。它也不知道有哪些控件要刷。
+	///
+	/// <b>为什么画完不退模式（M5.5 P2，用户拍板）：</b>
+	/// 用户实测的原话是"无法紧跟着划区域" —— 画一块就得再点一次按钮，
+	/// 而"一次拖拽 = 一块区域"这个约束并不是他要的。改成<b>连画</b>：
+	/// 画完继续留在模式里，想停就按 <c>Esc</c> 或再点一次那个按钮。
+	///
+	/// 代价是"画完不收模式"会让后来的点击继续画 —— 所以退出的路必须显眼：
+	/// 遮罩层那行提示会写明"继续拖矩形画下一块，Esc 结束"，并且
+	/// <c>Esc</c> 的两级语义（先收模式、再关面板）正好接得上。
 	/// </summary>
 	internal void OnZoneDrawn(Zone created)
 	{
 		SelectedZoneId = created.Id;
-		SetDrawMode(false);
 		RefreshZonePicker();
 		RefreshFields();
 		RefreshDrawTargets();
 		Panel.NotifyChanged();
-		Hud.Toast($"已画出一块「{created.Definition.Name}」（{created.Definition.Rect.Size.X:0}×{created.Definition.Rect.Size.Y:0}）");
+
+		Hud.Toast($"已画出一块「{created.Definition.Name}」"
+			+ $"（{created.Definition.Rect.Size.X:0}×{created.Definition.Rect.Size.Y:0}）"
+			+ "　继续拖矩形画下一块，Esc 结束");
 	}
 
 	// ------------------------------------------------------------------ 自检入口
