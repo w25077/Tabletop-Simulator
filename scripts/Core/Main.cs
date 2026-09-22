@@ -103,6 +103,9 @@ public partial class Main : Node2D
 		Zones.Bind(Objects, _hud, _hud);
 		Objects.Zones = Zones;
 
+		// 区域边界校验需要知道桌子多大（M5.5 P3）。
+		ZoneEditService.BindBoard(_board);
+
 		// ---- 开局内容先布好 ----
 		//
 		// <b>这三行的顺序是修完一个真 bug 之后定下来的，别调换。</b>
@@ -116,6 +119,9 @@ public partial class Main : Node2D
 		//
 		// 自检 undo_flow_simulation 现在常驻盯这件事：撤销到底必须回到开局的桌面。
 		DemoContent.Populate(Objects, Zones, _board.BoardRect.GetCenter());
+
+		// 开局这一桌的矩形记成"上一次合法的样子"（P3 的拒绝路径要靠它回滚）。
+		ZoneEditService.RememberAllRects(Zones);
 
 		// 撤销系统最后接上 —— 连"记历史"的引用都在 Populate 之后才给，
 		// 于是示例内容无论将来走哪条路都不可能混进历史。

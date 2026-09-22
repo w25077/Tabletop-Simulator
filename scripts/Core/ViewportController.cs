@@ -165,12 +165,16 @@ public partial class ViewportController : Node
 	/// <summary>
 	/// 收到过多少次<b>键盘按下</b>事件（自检用）。与 <see cref="MouseButtonEvents"/> 同一套路。
 	///
-	/// 为什么需要它：有一条断言时红时绿——"按 E 能转、按 F 不翻"，而两次跑的是同一个二进制、
-	/// 同一段代码。报告里只有 <c>flip_ok = false</c>，看不出到底是
-	/// <b>键没送到输入路由</b>还是<b>送到了但目标集是空的</b>。
-	/// 有了这个计数器，两种情况的报告长得完全不一样，不必再靠推测。
+	/// <b>它的语义有个必须记住的前提：只数<b>走到 <c>_UnhandledInput</c></b> 的键。</b>
+	/// Godot 的派发顺序是 <c>_Input</c> → GUI → <c>_UnhandledKeyInput</c> → <c>_UnhandledInput</c>，
+	/// 而物件系统（<c>ObjectManager</c>）是在 <c>_UnhandledKeyInput</c> 里处理 <c>F</c>/<c>E</c>/<c>R</c> 的
+	/// —— 所以那些键<b>本来就不会</b>让它增加，这是正常的，不是"键丢了"。
 	///
-	/// 只读、不改变任何行为，符合本项目"探针与诊断不许改变被测对象的可观测状态"。
+	/// 第一版注释把它说成了"收到过多少次键盘按下"，于是自检里两条断言
+	/// （<c>rotate_key_reached_router</c> / <c>flip_key_reached_router</c>）把"键被物件系统
+	/// 正常处理掉"误读成了"键没送到"——一条注释写错，就能造出两条假红。
+	/// 真正判断"键有没有到"要看哪一层，得分别数：
+	/// <c>ObjectManager.KeyEventsSeen</c>（物件系统看到几个）与 <c>EditorPanel.KeySeenTotal</c>。
 	/// </summary>
 	public int KeyEvents { get; private set; }
 

@@ -195,7 +195,7 @@ public sealed class ZoneResizer : IPrimaryPressHook
 			return;
 		}
 
-		LastResizeRejected = !ZoneEditService.Mutate(zone, d => d.Rect = next);
+		LastResizeRejected = !ZoneEditService.Mutate(zone, d => d.Rect = next, clampToBoard: true);
 	}
 
 	/// <inheritdoc/>

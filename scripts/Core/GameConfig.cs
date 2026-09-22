@@ -142,4 +142,14 @@ public static class GameConfig
 
 	/// <summary>把手的边长（世界单位）。比边框宽，才点得中。</summary>
 	public const float ZoneHandleSize = 16f;
+
+	/// <summary>
+	/// 「拖出桌面即将被删除」的提示色（M5.5 P3）。
+	///
+	/// 走 <c>SelfModulate</c> 乘在物件自己的绘制上，所以是一个"变暗发红"的乘法色 ——
+	/// 用警示红（<c>#bf616a</c>）直接乘会把卡面压得过暗，
+	/// 这里取一个偏亮的红：既明显偏离正常色，又还看得清卡面内容
+	/// （要看得清才谈得上"确认一下我拖的是哪张"）。
+	/// </summary>
+	public static readonly Color DragOutTint = new("#ff8f8f");
 }

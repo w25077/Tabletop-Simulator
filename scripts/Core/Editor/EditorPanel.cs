@@ -378,14 +378,17 @@ public partial class EditorPanel : Control
 	///   那些描边看起来像"面板里的某个东西选中了它们"。</item>
 	/// </list>
 	/// </summary>
+	/// <summary>本面板看到过的按键总数（只读诊断；见 <c>_UnhandledKeyInput</c> 的说明）。</summary>
+	internal static int KeySeenTotal { get; private set; }
+
 	public override void _UnhandledKeyInput(InputEvent @event)
 	{
 		if (@event is InputEventKey probe && probe.Pressed && !probe.Echo)
 		{
 			KeySeen++;
+			KeySeenTotal++;
 			KeySeenTrace = $"keycode={probe.Keycode}({(long)probe.Keycode}) frame={Engine.GetProcessFrames()} open={IsOpen}";
 		}
-
 		if (@event is not InputEventKey key || !key.Pressed || key.Echo)
 			return;
 

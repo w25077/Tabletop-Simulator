@@ -89,6 +89,8 @@ internal static class DevEditorSim
 			ProbeBoardPage(c, r, editor, main.Board);
 			ProbeZonePage(c, r, editor, zones, main.Camera);
 			ProbeZoneResize(c, r, editor, zones, main.Camera);
+			ProbeZoneBoardBounds(c, r, zones, main.Board);
+			await ProbeOutOfBoardObjects(main, c, r, baseline, main, objects, zones);
 			await ProbeZoneDeleteEntry(main, c, r, zones, main.Camera, undo);
 			ProbeDeleteGuards(c, r, objects, zones);
 			ProbeFocusIsKept(c, r, editor, objects);
@@ -1433,9 +1435,15 @@ internal static class DevEditorSim
 		c.Put("e2e_invariants_hold", ZoneInvariants.Check(objects, zones).All);
 
 		// ---- 6. 布桌面（先量原始尺寸：后面还原要用）----
+		//
+		// 尺寸从 2600 改成 3400 宽（M5.5 P3 之后）：这一步只需证明"桌面尺寸改得动"，
+		// 而下一步要画一块 3168 宽的示例手牌区 —— 桌子若是 2600 宽，那块区域
+		// 会被 P3 新加的桌面边界校验<b>正当地拒掉</b>，整条"开玩"链就断了
+		// （实测：一口红了 10 条 <c>e2e_*</c> 断言）。
+		// 这是"产品按新规则正确工作、而老测试与新规则冲突"，所以改测试的尺寸。
 		Vector2 originalSize = board.Theme.BoardRect.Size;
-		editor.BoardPage.ApplySizeForTest(2600f, 1700f);
-		c.Put("e2e_board_resized", Mathf.IsEqualApprox(board.Theme.BoardRect.Size.X, 2600f));
+		editor.BoardPage.ApplySizeForTest(3300f, 1800f);
+		c.Put("e2e_board_resized", Mathf.IsEqualApprox(board.Theme.BoardRect.Size.X, 3300f));
 
 		// ---- 7. 开玩 ----
 		//
@@ -1448,7 +1456,9 @@ internal static class DevEditorSim
 		// 那正是区域编辑最容易出错的地方（改完要 ApplyLayout，
 		// 而成员的位置与次序都得跟着重排）。
 		Zone? hand = ZoneEditService.Create(
-			zones, ZoneKind.Hand, new Rect2(400f, 820f, 3168f, 480f), "端到端手牌");
+			zones, ZoneKind.Hand, new Rect2(100f, 820f, 3100f, 480f), "端到端手牌");
+		r["e2e_hand_zone_board"] = $"{board.Theme.BoardRect.Size.X:0}x{board.Theme.BoardRect.Size.Y:0}";
+		r["e2e_hand_zone_reject"] = ZoneEditService.LastError;
 		c.Put("e2e_hand_zone_drawn", hand is not null);
 
 		if (hand is not null && zone is not null)
@@ -1517,7 +1527,7 @@ internal static class DevEditorSim
 			c.Put("e2e_project_has_our_card",
 				project.Cards.Exists(x => x.Id == cardId && x.FaceImage == fileName && x.Fields.Count == 2));
 			c.Put("e2e_project_has_our_deck", project.Decks.Exists(x => x.Id == deck.Id && x.TotalCards == 5));
-			c.Put("e2e_project_has_board_size", Mathf.IsEqualApprox(project.Board.BoardWidth, 2600f));
+			c.Put("e2e_project_has_board_size", Mathf.IsEqualApprox(project.Board.BoardWidth, 3300f));
 			c.Put("e2e_project_keeps_chinese", SaveJson.Serialize(project).Contains("端到端卡"));
 		}
 
@@ -2161,6 +2171,170 @@ internal static class DevEditorSim
 			else
 				ZoneEditService.Mutate(target, d => d.Rect = original);
 		}
+	}
+
+	// ------------------------------------------------------------------ 桌面边界（P3-5b）
+
+	/// <summary>
+	/// 「区域不能超出桌面」（M5.5 P3，用户拍板：**拒绝并说明**）。
+	///
+	/// 四条判据：
+	/// <list type="number">
+	/// <item><b>超界被拒且说得出理由</b> —— 拒绝必须带可读的原因
+	///   （"桌面是 3200×2000，这块是……"），否则用户只知道"没生效"。</item>
+	/// <item><b>被拒之后矩形必须原样</b> —— 这一条抓的是更隐蔽的一种错：
+	///   <c>Mutate</c> 收的是 <c>Action&lt;ZoneDefinition&gt;</c>，调用方<b>就地改完</b>
+	///   才轮到校验，所以"返回 false"并不自动等于"没改动"。
+	///   第一版就是这样：拒绝了，但区域已经偷偷变形了。</item>
+	/// <item><b>反例：正好贴边的区域算合法</b> —— 用闭区间判包含
+	///   （<c>Rect2.HasPoint</c> 的语义不含右/下边界，拿它判会让"贴着桌子下沿"被误拒，
+	///   端到端那条就这么红过一次）。</item>
+	/// <item><b>拖动改大小走夹取</b> —— 连续输入不能每帧拒绝，要被夹在桌内。</item>
+	/// </list>
+	/// </summary>
+	private static void ProbeZoneBoardBounds(
+		Checks c, Godot.Collections.Dictionary r, ZoneManager zones, Board board)
+	{
+		Rect2 original = board.Theme.BoardRect;
+
+		// 现画一块正常尺寸的空区域当靶子（全部改动都在它身上，最后删掉）
+		Zone? zone = ZoneEditService.Create(
+			zones, ZoneKind.Public, new Rect2(200f, 200f, 400f, 300f), "桌面边界靶子");
+
+		if (zone is null)
+		{
+			c.Put("bounds_has_a_target", false);
+			return;
+		}
+
+		Rect2 saved = zone.Definition.Rect;
+		c.Put("bounds_has_a_target", true);
+
+		try
+		{
+			// ---- 1. 超界：拒绝 + 说明 + 矩形原样 ----
+			bool rejected = !ZoneEditService.Mutate(zone, d => d.Rect = new Rect2(99999f, 99999f, 400f, 300f));
+			r["bounds_reject_message"] = ZoneEditService.LastError;
+			r["bounds_rect_after_reject"] = new Godot.Collections.Array
+			{
+				zone.Definition.Rect.Position.X, zone.Definition.Rect.Position.Y,
+				zone.Definition.Rect.Size.X, zone.Definition.Rect.Size.Y,
+			};
+
+			c.Put("bounds_rejects_out_of_board", rejected);
+			c.Put("bounds_reject_says_why", ZoneEditService.LastError.Contains("超出桌面"));
+			c.Put("bounds_reject_keeps_the_rect",
+				zone.Definition.Rect.Position.IsEqualApprox(saved.Position)
+				&& zone.Definition.Rect.Size.IsEqualApprox(saved.Size));
+
+			// ---- 2. 反例：正好贴着桌面下沿的区域算合法 ----
+			var flush = new Rect2(0f, original.Size.Y - 300f, 400f, 300f);
+			c.Put("bounds_allows_flush_with_bottom_edge", ZoneEditService.FitsBoard(flush));
+
+			// ---- 3. 拖动改大小：夹回桌内，而不是每帧拒绝 ----
+			bool clampedOk = ZoneEditService.Mutate(
+				zone, d => d.Rect = new Rect2(original.Size.X - 100f, original.Size.Y - 100f, 900f, 700f),
+				clampToBoard: true);
+
+			r["bounds_rect_after_clamp"] = new Godot.Collections.Array
+			{
+				zone.Definition.Rect.Position.X, zone.Definition.Rect.Position.Y,
+				zone.Definition.Rect.Size.X, zone.Definition.Rect.Size.Y,
+			};
+
+			c.Put("bounds_clamp_keeps_zone_inside",
+				clampedOk && board.Theme.Contains(zone.Definition.Rect));
+		}
+		finally
+		{
+			// 靶子自己收拾干净（它没有成员，删得掉）
+			if (!ZoneEditService.Delete(zones, zone))
+				r["bounds_cleanup_failed"] = ZoneEditService.LastError;
+		}
+	}
+
+	// ------------------------------------------------------------------ 桌面外老物件（P3-5c）
+
+	/// <summary>
+	/// 「桌面改小之后，已经在桌子外的老物件怎么办」—— 用户拍板：**留着 + 警告**。
+	///
+	/// 为什么不清理：存档不该因为"我把桌子改小了"就少东西 ——
+	/// 那是一次不可见的销毁，用户下次打开只会发现"我的牌没了"。
+	///
+	/// 判据三条：
+	/// <list type="number">
+	/// <item>读档<b>不删</b>桌外物件（数量一件不少）；</item>
+	/// <item>读档<b>数得出来</b>有几件在桌外（<c>SaveSystem.OutOfBoardCount</c>），
+	///   警告文案才有内容可写；</item>
+	/// <item>那条警告<b>真的会响</b> —— 靠 <c>OutOfBoardCount &gt; 0</c> 这个数来钉，
+	///   而不是去抓日志字符串（日志在 stderr，而判定读的是报告）。</item>
+	/// </list>
+	/// </summary>
+	private static async Task ProbeOutOfBoardObjects(
+		Node host, Checks c, Godot.Collections.Dictionary r,
+		SceneSnapshot baselineForCleanup,
+		Main main, ObjectManager objects, ZoneManager zones)
+	{
+		const string ProbeSave = "自检桌外物件";
+		BoardTheme theme = main.Board.Theme;
+
+		int before = objects.ObjectCount;
+		SaveSystem.DeleteSave(ProbeSave);
+
+		// ---- 1. 先制造几件"在桌面外"的物件 ----
+		//
+		// 刻意<b>不</b>用"把桌面改小"来造这个局面：那条路要经过编辑器的最小桌面尺寸校验
+		// （第一版就是那么写的，结果尺寸没变成 10×10，<c>out_of_board_made = 0</c>，
+		//   这一节于是永远验不到东西）。直接把物件挪出桌面更直接，
+		// 而且它正是"老存档 + 后来把桌子改小"最终留下的样子。
+		Vector2 far = new(-600f, -400f);
+		var moved = new List<(TabletopObject Obj, Vector2 Was)>();
+
+		foreach (TabletopObject obj in objects.AllObjects)
+		{
+			if (moved.Count < 3 && obj.ZoneId.Length == 0 && obj.PileId == 0)
+			{
+				moved.Add((obj, obj.Position));
+				obj.Position = far + new Vector2(moved.Count * 80f, 0f);
+			}
+		}
+
+		int outsideNow = 0;
+		foreach (TabletopObject obj in objects.AllObjects)
+		{
+			if (!theme.ContainsPoint(obj.Position))
+				outsideNow++;
+		}
+
+		r["out_of_board_made"] = outsideNow;
+		c.Put("out_of_board_setup_made_some", outsideNow > 0);
+
+		// ---- 2. 存下来 ----
+		bool saved = SaveSystem.Save(ProbeSave, objects, zones, theme);
+		c.Put("out_of_board_save_ok", saved);
+
+		// ---- 3. 读回来：桌外物件必须<b>一件不少</b>（用户拍板：不清理，只警告）----
+		bool loaded = SaveSystem.Load(ProbeSave, objects, zones, theme, main.Undo, out string loadFailure);
+		await DevInputSim.Frame(host);
+
+		r["out_of_board_load_failure"] = loadFailure;
+		r["out_of_board_count"] = SaveSystem.OutOfBoardCount;
+		r["out_of_board_objects_before"] = before;
+		r["out_of_board_objects_after"] = objects.ObjectCount;
+
+		c.Put("out_of_board_load_ok", loaded);
+		c.Put("out_of_board_keeps_every_object", objects.ObjectCount == before);
+		c.Put("out_of_board_counts_them", SaveSystem.OutOfBoardCount > 0);
+
+		// 收拾：把桌子恢复成探针动手之前的样子。
+		//
+		// <b>必须靠"重放一次快照"而不是"把物件挪回去"</b>：读档会把桌面上的物件
+		// <b>整桌重建</b>，上面那份 (物件 → 原坐标) 列表里的节点引用那时已经全部失效了
+		// （症状会是"挪回去没反应"或碰到已释放的节点，而报告里看起来只是位置不对）。
+		// 这里用的正是探针通用的那条收尾路径：再来一次读档读掉这次改动。
+		baselineForCleanup?.Restore(objects, zones);
+		SaveSystem.DeleteSave(ProbeSave);
+		await DevInputSim.Frame(host);
 	}
 
 	// ------------------------------------------------------------------ 删除入口（P2-4c）

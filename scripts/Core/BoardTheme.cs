@@ -44,6 +44,51 @@ public sealed class BoardTheme
 	[System.Text.Json.Serialization.JsonIgnore]
 	public Rect2 BoardRect => new(Vector2.Zero, new Vector2(BoardWidth, BoardHeight));
 
+	/// <summary>
+	/// 一个矩形是否<b>整个</b>落在桌面内（M5.5 P3）。
+	///
+	/// 判据是"包含"而不是"相交"：区域只要有一角伸到桌外，那一角就永远点不到、
+	/// 也没法用鼠标把它拖回来 —— 半截在桌外的区域是个陷阱。
+	///
+	/// <b>这里刻意不用 <c>Rect2.HasPoint</c> 的语义</b>：那个方法对右边界与下边界是
+	/// <b>不含</b>的（半开区间），于是"正好贴在桌子下沿的区域"会被判成越界 ——
+	/// 实测就是这么来的：一块 <c>y=820 高 480</c> 的区域放在 <c>高 1300</c> 的桌上，
+	/// 下沿正好落在 1300，被判成"超出桌面"而拒绝创建。
+	/// 对"区域在不在桌内"这件事，贴着边<b>就是</b>在桌内，所以用闭区间。
+	/// </summary>
+	public bool Contains(Rect2 rect)
+	{
+		Rect2 board = BoardRect;
+
+		return rect.Position.X >= board.Position.X
+			&& rect.Position.Y >= board.Position.Y
+			&& rect.End.X <= board.End.X
+			&& rect.End.Y <= board.End.Y;
+	}
+
+	/// <summary>
+	/// 把一个矩形<b>夹</b>进桌面范围（用于拖动改大小的实时反馈）。
+	///
+	/// 与 <see cref="Contains"/> 的分工：绘制/新建/表单提交这类"一次性输入"用拒绝
+	/// （静默改用户的输入更糟），而<b>拖动过程中</b>要用夹 —— 每一帧都拒绝的话
+	/// 用户只会看到"拖到边上就不动了"，而且会刷出一串错误提示。
+	/// </summary>
+	public Rect2 Clamp(Rect2 rect)
+	{
+		Rect2 board = BoardRect;
+
+		float width = Mathf.Min(rect.Size.X, board.Size.X);
+		float height = Mathf.Min(rect.Size.Y, board.Size.Y);
+
+		float x = Mathf.Clamp(rect.Position.X, board.Position.X, board.End.X - width);
+		float y = Mathf.Clamp(rect.Position.Y, board.Position.Y, board.End.Y - height);
+
+		return new Rect2(x, y, width, height);
+	}
+
+	/// <summary>一个点是否在桌面内（P3：拖到桌外的物件要删掉）。</summary>
+	public bool ContainsPoint(Vector2 point) => BoardRect.HasPoint(point);
+
 	public BoardTheme Clone() => new()
 	{
 		BackgroundImage = BackgroundImage,

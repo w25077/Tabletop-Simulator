@@ -662,6 +662,84 @@ public partial class ObjectManager : Node2D, IWorldPicker, IWheelHandler
 
 		foreach (Pile pile in _draggingPiles)
 			pile.Anchor += worldDelta;
+
+		// "拖出桌面就要删"必须是<b>可预期</b>的：松手之前就让用户看见。
+		// 用户拍板的原话是"拖到画布外的东西就被删除"，而误删的代价是
+		// "一次误拖花十分钟收拾"，所以这里在拖动过程中就把结果摆在眼前。
+		UpdateDragOutTint();
+	}
+
+	/// <summary>
+	/// 这一次拖拽的"锚点"位置 —— 拖的那组里<b>最上面</b>的那张（与
+	/// <see cref="TryMergeAfterDrop"/> 的锚点取法一致）。
+	///
+	/// 和落点判定共用它，是为了让"松手会不会删"与"松手删哪一组"说的是同一件事。
+	/// </summary>
+	private Vector2 DraggedAnchorPosition()
+	{
+		TabletopObject? anchor = null;
+
+		foreach (TabletopObject obj in _dragging)
+		{
+			if (!IsInstanceValid(obj))
+				continue;
+
+			if (anchor is null || _drawOrder.IndexOf(obj) > _drawOrder.IndexOf(anchor))
+				anchor = obj;
+		}
+
+		return anchor?.Position ?? Vector2.Zero;
+	}
+
+	/// <summary>是否正处于"松手就会被删除"的状态（自检读它验"提前变色"真的发生过）。</summary>
+	internal bool DragOutWarned { get; private set; }
+
+	/// <summary>
+	/// 刷新"即将因拖出桌面而被删"的提示色。
+	///
+	/// 用 <c>SelfModulate</c> 而不是 <c>Modulate</c>：它是"把自己的绘制结果再乘一层"，
+	/// 不会往下传给子节点，也就不会碰 <c>_selection</c> / 描边那套逻辑。
+	/// 关掉时恢复白色（乘法单位元）。
+	///
+	/// 只在状态<b>变化</b>时才写，而不是每帧写 —— 与 M5 那条"值没变就别赋值"
+	/// 同一个道理（那边是 <c>LineEdit.Text</c>，这边是避免无意义的重绘风暴）。
+	/// </summary>
+	private void UpdateDragOutTint()
+	{
+		if (_dragging.Count == 0)
+			return;
+
+		bool outside = !_board.BoardRect.HasPoint(DraggedAnchorPosition());
+
+		if (outside == DragOutWarned)
+			return;
+
+		DragOutWarned = outside;
+		ApplyDragOutTint(outside);
+
+		if (outside)
+			_hud?.Toast("松手即删除（拖回桌面内可取消）");
+	}
+
+	private void ApplyDragOutTint(bool outside)
+	{
+		Color tint = outside ? GameConfig.DragOutTint : Colors.White;
+
+		foreach (TabletopObject obj in _dragging)
+		{
+			if (IsInstanceValid(obj))
+				obj.SelfModulate = tint;
+		}
+	}
+
+	/// <summary>收干净提示色。任何一次拖拽结束都要调 —— 否则那张牌会一直红着。</summary>
+	private void ClearDragOutTint()
+	{
+		if (!DragOutWarned)
+			return;
+
+		DragOutWarned = false;
+		ApplyDragOutTint(false);
 	}
 
 	private void OnPrimaryReleased(Vector2 worldPos)
@@ -688,6 +766,7 @@ public partial class ObjectManager : Node2D, IWorldPicker, IWheelHandler
 			}
 
 			EmitSelectionChanged();
+			ClearDragOutTint();
 			_dragging.Clear();
 			_draggingPiles.Clear();
 
@@ -729,6 +808,34 @@ public partial class ObjectManager : Node2D, IWorldPicker, IWheelHandler
 						: $"移动 {dragged} 个物件";
 				}
 			}
+			// ---- 桌面边界（M5.5 P3，用户拍板：拖出桌面 = 删除）----
+			//
+			// 放在"区域定夺"之后：区域本身也在桌面内，落点若被某个区域收下，
+			// 那就不是"拖到桌外"。而这一步之后、并堆之前 —— 拖出去的东西不该
+			// 先和桌上的牌粘成一堆再被删掉（那会多出一条莫名其妙的并堆历史）。
+			//
+			// <b>判据用"锚点"（拖的那组里最上面那张）而不是每一张都在桌内</b>：
+			// 一次手势拿起 10 张牌，边缘那几张压线是常事，若按"每一张都在桌内"
+			// 判定，用户会被迫反复微调落点。用锚点 = "你把手上的东西放在哪儿"。
+			if (_dragging.Count > 0 && !_board.BoardRect.HasPoint(DraggedAnchorPosition()))
+			{
+				_lastDropLabel = _dragging.Count == 1
+					? "拖出桌面，删除 1 个物件"
+					: $"拖出桌面，删除 {_dragging.Count} 个物件";
+
+				_hud?.Toast($"{_lastDropLabel}（Ctrl+Z 可撤回）");
+				DeleteObjectsCore(new List<TabletopObject>(_dragging), record: true);
+
+				// DeleteObjectsCore 已经把它们从 _dragging 指向的集合里摘掉了，
+				// 但这里仍然显式收尾 —— 与下面那条正常路径保持同一套收尾动作，
+				// 免得将来给收尾加东西时漏掉这一支。
+				_dropAlreadyRecorded = true;   // 上面那条 DeleteObjectsCore 已经记过历史
+				ClearDragOutTint();
+				_dragging.Clear();
+				_draggingPiles.Clear();
+				ApplyDrawOrder();
+				return;
+			}
 		}
 		else if (_selection.Count == 1 && _selection[0] is DiceObject single)
 		{
@@ -747,6 +854,7 @@ public partial class ObjectManager : Node2D, IWorldPicker, IWheelHandler
 			_dropAlreadyRecorded = true;
 		}
 
+		ClearDragOutTint();
 		_dragging.Clear();
 		_draggingPiles.Clear();
 		ApplyDrawOrder();
@@ -758,6 +866,7 @@ public partial class ObjectManager : Node2D, IWorldPicker, IWheelHandler
 		if (_selection.Count > 0)
 			ClearSelectionInternal();
 
+		ClearDragOutTint();
 		_dragging.Clear();
 		_draggingPiles.Clear();
 	}
@@ -2071,10 +2180,31 @@ public partial class ObjectManager : Node2D, IWorldPicker, IWheelHandler
 		return true;
 	}
 
+	/// <summary>本节点看到过的按键数（只读诊断；见 <c>_UnhandledKeyInput</c> 里的说明）。</summary>
+	internal int KeyEventsSeen { get; private set; }
+
+	/// <summary>
+	/// 当前悬停的物件 uid（只读诊断；没有则空串）。
+	///
+	/// 为什么值得暴露：按键作用的<b>目标</b>按"悬停优先"解析（见
+	/// <see cref="ResolveActionTargets"/>），所以"按 E 没反应"完全可能是
+	/// "悬停还停在另一张牌上、而 E 转的是那一张"——那时被观察的那张自然纹丝不动，
+	/// 而报告里只有一个 0。把悬停对象的名字写出来，这种情况一眼可辨。
+	/// </summary>
+	internal string HoveredUidForTest => _hovered is not null && IsInstanceValid(_hovered) ? _hovered.Uid : "";
+
 	public override void _UnhandledKeyInput(InputEvent @event)
 	{
 		if (@event is not InputEventKey key || !key.Pressed || key.Echo)
 			return;
+
+		// 只读计数器（诊断用）：本节点到底看到过几个按键。
+		//
+		// 存在的理由与 ViewportController.KeyEvents 同一套"把猜换成读"：
+		// 自检报出"按 E 没反应"时，报告里只有 rotation_delta = 0 ——
+		// 那个 0 分不出三种情况：键没送到引擎、被别的节点吃了、还是送到了但目标集是空的。
+		// 把这个数写进报告，三种情况立刻分得开（本轮就靠它把范围缩到了"键没到这一层"）。
+		KeyEventsSeen++;
 
 		// 撤销 / 重做。放在<b>最前面</b>：它的目标是"整张桌子"，
 		// 与悬停 / 选中无关，不该被后面的分支抢先。

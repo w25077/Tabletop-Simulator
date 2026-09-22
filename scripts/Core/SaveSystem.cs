@@ -447,7 +447,39 @@ public static class SaveSystem
 		if (skipped > 0)
 			GD.PushWarning($"[SaveSystem] {saveName} 里有 {skipped} 个物件的定义不存在，已跳过");
 
+		// ---- 桌面变小之后的老物件（M5.5 P3，用户拍板：留着 + 警告，不清理）----
+		//
+		// 为什么不清理：存档不该因为"我把桌子改小了"就少东西 ——
+		// 那是一次不可见的销毁，而用户下次打开只会发现"我的牌没了"。
+		// 所以只数一遍、说清楚，剩下交给用户（拖回来，或就这么放着）。
+		OutOfBoardCount = CountOutOfBoard(objects, theme);
+		if (OutOfBoardCount > 0)
+		{
+			GD.PushWarning($"[SaveSystem] {saveName} 里有 {OutOfBoardCount} 件物件在桌面之外"
+				+ "（桌面被改小过？），已原样保留");
+		}
+
+		// 区域矩形这份"上一次合法的样子"要跟着换一桌 —— 不换的话，
+		// 某次改动被拒时会写回一个属于上一桌的坐标（见 ZoneEditService.RememberAllRects）。
+		ZoneEditService.RememberAllRects(zones);
+
 		return true;
+	}
+
+	/// <summary>上一次读档时"落在桌面之外"的物件数（0 = 没有；自检读它验这条警告真的会响）。</summary>
+	public static int OutOfBoardCount { get; private set; }
+
+	private static int CountOutOfBoard(ObjectManager objects, BoardTheme theme)
+	{
+		int n = 0;
+
+		foreach (TabletopObject obj in objects.AllObjects)
+		{
+			if (!theme.ContainsPoint(obj.Position))
+				n++;
+		}
+
+		return n;
 	}
 
 	// ------------------------------------------------------------------ 存档列表与增删

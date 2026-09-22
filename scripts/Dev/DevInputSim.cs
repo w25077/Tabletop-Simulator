@@ -460,6 +460,16 @@ internal static class DevInputSim
 	}
 
 	/// <summary>
+	/// 给外部探针用：当前"会吃鼠标"的控件带（屏幕坐标）。
+	///
+	/// 别的探针需要自己挑屏幕点时（例如 P3 那条"拖到桌面外"要找桌外且不压控件的点），
+	/// 必须用<b>同一份</b>避让依据 —— 各写一份的下场是两边对"哪里是空的"意见不一致，
+	/// 而症状是"这个探针绿、那个探针红"。
+	/// </summary>
+	internal static List<Rect2> ScreenBlockerBands(BoardCamera cam)
+		=> BuildBlockerBands(cam, cam.GetViewportRect().Size);
+
+	/// <summary>
 	/// 收集当前<b>会吃掉鼠标事件</b>的控件矩形（屏幕坐标）。
 	///
 	/// 判据完全按 Godot 的规则来，一条都不猜：
