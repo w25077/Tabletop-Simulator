@@ -1,6 +1,6 @@
 [gd_scene load_steps=3 format=3 uid="uid://dtg5ksjrw24yq"]
 
-[ext_resource type="Script" uid="uid://cg2b4meqswwnd" path="res://scripts/Core/Editor/CardEditorPage.cs" id="1_card"]
+[ext_resource type="Script" path="res://scripts/Core/Editor/CardEditorPage.cs" id="1_card"]
 [ext_resource type="Script" uid="uid://c4vfdoqdce16p" path="res://scripts/Core/Editor/CardPreview.cs" id="2_preview"]
 
 [node name="PageCards" type="Control"]
@@ -61,6 +61,31 @@ theme_override_constants/separation = 2
 layout_mode = 2
 size_flags_horizontal = 3
 theme_override_constants/separation = 6
+
+[node name="TargetBar" type="PanelContainer" parent="Row/Right"]
+visible = false
+layout_mode = 2
+
+[node name="Row" type="HBoxContainer" parent="Row/Right/TargetBar"]
+layout_mode = 2
+theme_override_constants/separation = 8
+
+[node name="TargetLabel" type="Label" parent="Row/Right/TargetBar/Row"]
+layout_mode = 2
+text = "正在编辑：桌上某一张"
+
+[node name="TargetDot" type="Label" parent="Row/Right/TargetBar/Row"]
+layout_mode = 2
+text = "●"
+
+[node name="TargetHint" type="Label" parent="Row/Right/TargetBar/Row"]
+layout_mode = 2
+size_flags_horizontal = 3
+text = "改字段只影响这一张"
+
+[node name="TargetClear" type="Button" parent="Row/Right/TargetBar/Row"]
+layout_mode = 2
+text = "改回定义（×）"
 
 [node name="Preview" type="Control" parent="Row/Right"]
 custom_minimum_size = Vector2(420, 260)

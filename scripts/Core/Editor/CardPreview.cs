@@ -74,6 +74,46 @@ public partial class CardPreview : Control
 	}
 
 	/// <summary>
+	/// 实例级覆盖（键 → 值）。按实例编辑时预览要按"定义 + 覆盖"合成，
+	/// 与桌上那张卡走同一个渲染函数 —— 否则会出现"预览是一个值、桌上另一个值"，
+	/// 而那正是最让人不信任编辑器的症状（M5 的类注释里已经记过同一条理由）。
+	/// </summary>
+	private System.Collections.Generic.Dictionary<string, string>? _overrides;
+
+	public void SetOverrides(System.Collections.Generic.Dictionary<string, string>? overrides)
+	{
+		bool changed = !SameOverrides(_overrides, overrides);
+
+		// 存一份副本：调用方给的是那张卡的活字典，直接留着引用的话
+		// "预览持有的是哪一份"会随时间漂移，而重画与否就再也判断不准了。
+		_overrides = overrides == null
+			? null
+			: new System.Collections.Generic.Dictionary<string, string>(overrides);
+
+		if (changed)
+			QueueRedraw();
+	}
+
+	private static bool SameOverrides(
+		System.Collections.Generic.Dictionary<string, string>? a,
+		System.Collections.Generic.Dictionary<string, string>? b)
+	{
+		if (a is null || b is null)
+			return a is null && b is null;
+
+		if (a.Count != b.Count)
+			return false;
+
+		foreach (System.Collections.Generic.KeyValuePair<string, string> kv in a)
+		{
+			if (!b.TryGetValue(kv.Key, out string? v) || v != kv.Value)
+				return false;
+		}
+
+		return true;
+	}
+
+	/// <summary>
 	/// 卡片按固定宽高比排布，两侧各留一点边。
 	///
 	/// 宽高比取 <see cref="GameConfig.DefaultCardSize"/> 的比例而不是写死数字：
@@ -148,7 +188,7 @@ public partial class CardPreview : Control
 		}
 
 		// 与桌上那张卡<b>同一个函数</b>（见类注释）。
-		CardFaceRenderer.DrawFace(this, _definition, face);
+		CardFaceRenderer.DrawFace(this, _definition, face, _overrides);
 		CardFaceRenderer.DrawBack(this, _definition, back);
 
 		DrawString(Fonts.Ui, new Vector2(face.Position.X, face.Position.Y - 6f),

@@ -84,6 +84,10 @@ internal static class DevEditorSim
 			ProbeCardFields(c, r, editor, objects);
 			ProbeCardTemplate(c, r, editor, objects);
 			ProbeImport(c, r, editor, objects);
+			ProbeImportEntryPoints(c, r, editor, main.Board, objects);
+			ProbeInstanceEdit(c, r, editor, objects, main.Hud, main.Camera);
+			await ProbeEditorUndo(c, r, main, main, editor, objects, zones, undo);
+			await ProbePagesFollowTheLoadedSave(c, r, main, main, editor, objects, zones);
 			ProbeTokenPage(c, r, editor, objects);
 			ProbeDeckPage(c, r, editor, objects, zones, main.Board);
 			ProbeBoardPage(c, r, editor, main.Board);
@@ -100,6 +104,25 @@ internal static class DevEditorSim
 			await ProbePreviewPixels(c, r, editor, objects);
 			await ProbeTokenPreviewPixels(c, r, editor);
 		}
+		catch (System.Exception ex)
+		{
+			// <b>一个探针抛异常，不该让整份报告消失。</b>
+			//
+			// 这一条是实测出来的：回退验证时把「指示物」页的那个按钮从场景里去掉了，
+			// 于是 <c>GetNode</c> 抛 <c>NodeNotFound</c> —— 而
+			// <see cref="DevCapture"/> 里没有任何一层 catch，异常一路冒到顶层，
+			// <b>报告文件根本没被写出来</b>，跑自检的脚本等到超时。
+			//
+			// 症状比"某一节变红"严重得多：报告不存在时，人只能看到"超时"，
+			// 而真正的原因（缺一个节点）在 stderr 里几百行之外。
+			//
+			// 处置：把异常<b>变成这一节的读数</b>。写一条失败断言 + 把类型与消息带进报告，
+			// 于是"哪一节、哪一类异常、什么消息"一眼可见。仍然 fail-closed：
+			// 抛过异常的节必然 <c>pass=false</c>，不会伪装成通过。
+			c.Put("probe_threw_no_exception", false);
+			r["probe_exception"] = $"{ex.GetType().Name}: {ex.Message}";
+			r["probe_exception_site"] = ex.StackTrace ?? "";
+		}
 		finally
 		{
 			// 收尾：关面板 + 写回快照。写在 finally 里 —— 中间任何一条断言抛异常，
@@ -110,7 +133,6 @@ internal static class DevEditorSim
 			baseline.Restore(objects, zones);
 			undo.Reset();
 		}
-
 		r["objects_at_end"] = objects.ObjectCount;
 		c.Put("table_restored", objects.ObjectCount == objectsAtStart);
 		c.Put("invariants_after_probe", ZoneInvariants.Check(objects, zones).All);
@@ -1639,8 +1661,854 @@ internal static class DevEditorSim
 		}
 	}
 
-	private static void CopyRaw(string from, string to)
+	/// <summary>
+	/// 「导入图片」这条路的<b>界面入口</b>（M5 遗留口子之二）。
+	///
+	/// 上面那个 <see cref="ProbeImport"/> 测的是服务层 <see cref="ImageImport.Copy"/>：
+	/// 拷贝语义、重名不覆盖、字节一致。它<b>一条都不问"入口在不在"</b> ——
+	/// 而这一条口子的全部内容恰恰就是入口：导入原先只在「卡牌」页有，
+	/// 「桌面」页的提示干脆写着"用「卡牌」页的导入"，「指示物」页只能从已有图里挑。
+	///
+	/// 于是这一组按<b>用户实际会做的那条路</b>验：
+	/// 按钮在不在 → 选完文件之后的回调走一遍 → <b>导进来的图真的落到本页那个槽位上</b>。
+	/// 走的是 <c>ApplyImportedImage</c>（用户选完文件之后执行的同一段代码），
+	/// 而不是另写一份"给测试用"的替身。
+	/// </summary>
+	private static void ProbeImportEntryPoints(
+		Checks c, Godot.Collections.Dictionary r, EditorPanel editor, Board board, ObjectManager objects)
 	{
+		CardEditorPage card = editor.CardPage;
+		BoardEditorPage boardPage = editor.BoardPage;
+		TokenEditorPage tokenPage = editor.TokenPage;
+
+		// ---- 1. 三个入口都在、都看得见 ----
+		// 用 <c>FindChild</c> 递归找：三个按钮分别嵌在三棵不同的控件树里，
+		// 而"哪一层"不是这条断言要问的东西（问的是入口在不在）。
+		Button? cardButton = card.FindChild("ImportButton", true, false) as Button;
+		Button? boardButton = boardPage.FindChild("ImportButton", true, false) as Button;
+		Button? tokenButton = tokenPage.FindChild("ImportButton", true, false) as Button;
+
+		c.Put("card_page_has_import_entry", cardButton is not null && cardButton.Visible);
+		c.Put("board_page_has_import_entry", boardButton is not null && boardButton.Visible);
+		c.Put("token_page_has_import_entry", tokenButton is not null && tokenButton.Visible);
+
+		r["import_entry_labels"] = new Godot.Collections.Array
+		{
+			cardButton?.Text ?? "", boardButton?.Text ?? "", tokenButton?.Text ?? "",
+		};
+
+		// 三个按钮的文字要一致：三处各写一套文案，迟早有一页写着别的措辞。
+		string cardText = cardButton?.Text ?? "X";
+		c.Put("import_entry_labels_agree",
+			boardButton is not null && tokenButton is not null
+			&& boardButton.Text == cardText && tokenButton.Text == cardText);
+
+		// 都要能装下文字（0 宽度的按钮点不到 —— M4 那条"0 高度面板穿过了全部判据"的亲戚）
+		c.Put("import_entries_have_size",
+			(boardButton?.Size.X ?? 0f) > 20f && (tokenButton?.Size.X ?? 0f) > 20f);
+
+		// ---- 2. 导一张图，然后按"用户选完文件"走一遍 ----
+		string tempDir = TempDir();
+		AppPaths.EnsureDir(tempDir);
+
+		string tempPath = $"{tempDir}/selfcheck_import_entry.png";
+		var image = Image.CreateEmpty(12, 12, false, Image.Format.Rgba8);
+		image.Fill(new Color("#a3be8c"));
+		c.Put("import_entry_temp_png_writable", image.SavePng(tempPath) == Error.Ok);
+
+		// ---- 2a. 「桌面」页：导完要成为桌面背景 ----
+		editor.SwitchTab(EditorPanel.TabBoard);
+		boardPage.OnShown();
+
+		string boardImageBefore = board.Theme.BackgroundImage;
+		int boardCountBefore = ImageImport.ImportCount;
+
+		string? chosen = null;
+		boardPage.OnImportFileSelected(tempPath, boardPage.ApplyImportedImage);
+		chosen = board.Theme.BackgroundImage;
+
+		c.Put("board_import_counted", ImageImport.ImportCount == boardCountBefore + 1);
+		c.Put("board_import_sets_background",
+			chosen.Length > 0 && chosen.EndsWith(".png") && chosen != boardImageBefore);
+		r["board_import_name"] = chosen;
+		r["board_import_error"] = ImageImport.LastError;
+
+		// 导进来的图必须出现在这一页的下拉里（否则"设上了"这件事在界面上看不见）
+		OptionButton bgPicker = boardPage.GetNode<OptionButton>("Scroll/Column/BgRow/BackgroundImage");
+		c.Put("board_import_appears_in_picker", PickerContains(bgPicker, chosen));
+		c.Put("board_import_picker_selects_it", SelectedMetadata(bgPicker) == chosen);
+
+		// 桌面背景真的换上了（<c>Board.ApplyTheme</c> 会去加载纹理）
+		c.Put("board_import_applied_to_board", board.Theme.BackgroundImage == chosen);
+
+		// 还原，别把这一页的状态留给后面的探针
+		boardPage.ApplyImportedImage(boardImageBefore.Length > 0 ? boardImageBefore : "");
+		if (boardImageBefore.Length == 0)
+		{
+			// 空串表示"只用底色"：走一次下拉的第 0 项，与用户点它同一条路
+			bgPicker.Selected = 0;
+			boardPage.ApplyImportedImage("");
+		}
+
+		c.Put("board_import_reverted", board.Theme.BackgroundImage == boardImageBefore);
+
+		// ---- 2b. 「指示物」页：导完要成为这个指示物的中心图 ----
+		editor.SwitchTab(EditorPanel.TabTokens);
+		tokenPage.OnShown();
+
+		TokenDefinition? target = tokenPage.Selected;
+		if (target is null)
+		{
+			c.Put("token_import_target_exists", false);
+		}
+		else
+		{
+			c.Put("token_import_target_exists", true);
+
+			string imageBefore = target.Image;
+			tokenPage.OnImportFileSelected(tempPath, tokenPage.ApplyImportedImage);
+
+			string imageAfter = ImageOfToken(objects, target.Id);
+			c.Put("token_import_sets_center_image", imageAfter.Length > 0 && imageAfter != imageBefore);
+			r["token_import_name"] = imageAfter;
+
+			OptionButton tokenPicker =
+				tokenPage.GetNode<OptionButton>("Row/Right/FormScroll/Form/ImageRow/TokenImagePicker");
+			c.Put("token_import_appears_in_picker", PickerContains(tokenPicker, imageAfter));
+
+			// 还原
+			tokenPage.ApplyImportedImage(imageBefore);
+			c.Put("token_import_reverted", ImageOfToken(objects, target.Id) == imageBefore);
+		}
+
+		// ---- 2c. 「卡牌」页：同一条路（原来唯一有入口的那一页）----
+		editor.SwitchTab(EditorPanel.TabCards);
+		card.OnShown();
+
+		CardDefinition? cardDef = card.Selected;
+		if (cardDef is null)
+		{
+			c.Put("card_import_target_exists", false);
+		}
+		else
+		{
+			c.Put("card_import_target_exists", true);
+
+			string faceBefore = cardDef.FaceImage;
+			card.OnImportFileSelected(tempPath, card.ApplyImportedImage);
+
+			c.Put("card_import_sets_face_image",
+				cardDef.FaceImage.Length > 0 && cardDef.FaceImage != faceBefore);
+			r["card_import_name"] = cardDef.FaceImage;
+
+			card.ApplyImportedImage(faceBefore);
+			c.Put("card_import_reverted", cardDef.FaceImage == faceBefore);
+		}
+
+		// ---- 3. 按钮真的要能"按下去"（接线本身也要有裁判）----
+		//
+		// <b>这一组是补上来的，因为第一版是一条假绿：</b>只读按钮的文字与尺寸、
+		// 然后直接调 <c>ApplyImportedImage</c> —— 于是把
+		// <c>button.Pressed += OnImportPressed</c> 那一行注释掉，整节照样全绿。
+		// 断言得有裁判，而"接线在不在"只有<b>按下按钮</b>才问得到。
+		//
+		// 判据是"按下去真的弹出了对话框"：<c>FileDialog</c> 是弹窗，
+		// 而探针按完立刻用 <see cref="EditorPage.CloseImportDialogs"/> 收掉
+		// （残留的 <c>Window</c> 会抢走后续合成鼠标事件，项目里踩过两次）。
+		editor.SwitchTab(EditorPanel.TabBoard);
+		c.Put("board_import_button_presses", boardPage.PressImportButtonForTest());
+
+		editor.SwitchTab(EditorPanel.TabTokens);
+		c.Put("token_import_button_presses", tokenPage.PressImportButtonForTest());
+
+		editor.SwitchTab(EditorPanel.TabCards);
+		c.Put("card_import_button_presses", card.PressImportButtonForTest());
+
+		// 按完必须收干净
+		c.Put("import_dialogs_cleaned_up",
+			boardPage.ImportDialogCountForTest() == 0
+			&& tokenPage.ImportDialogCountForTest() == 0
+			&& card.ImportDialogCountForTest() == 0);
+	}
+
+	/// <summary>读某个指示物定义当前的 <c>Image</c>（走到物件系统那份真相上，不读表单）。</summary>
+	private static string ImageOfToken(ObjectManager objects, string tokenId) =>
+		objects.TokenDefinitions.TryGetValue(tokenId, out TokenDefinition? def) ? def.Image : "";
+
+	/// <summary>下拉里有没有这个文件名（按项的 metadata 找，不看显示文字）。</summary>
+	private static bool PickerContains(OptionButton picker, string fileName)
+	{
+		for (int i = 0; i < picker.ItemCount; i++)
+		{
+			if (picker.GetItemMetadata(i).AsString() == fileName)
+				return true;
+		}
+
+		return false;
+	}
+
+	private static string SelectedMetadata(OptionButton picker) =>
+		picker.Selected >= 0 && picker.Selected < picker.ItemCount
+			? picker.GetItemMetadata(picker.Selected).AsString()
+			: "";
+
+	/// <summary>
+	/// 实例级覆盖（M5 遗留口子之三）：右键「编辑这张」→ 只改桌上这一张。
+	///
+	/// <b>这一条口子的要害是"两张"：</b>桌上两张同名卡，改其中一张的字段值，
+	/// 另一张<b>必须不变</b>、定义也必须不变。所以这一组每一条断言都成对：
+	/// 目标那张变了 <b>且</b> 对照那张没变 —— 只断言"目标变了"的话，
+	/// "其实是改了定义、于是两张一起变"照样全绿。
+	///
+	/// 覆盖进不进得去 <c>ObjectState</c> 也在这里验：M4 那条规矩
+	/// （加字段先问它进没进快照）当年就是骰子点数栽过的地方 —— 改了却撤不掉。
+	/// </summary>
+	private static void ProbeInstanceEdit(
+		Checks c, Godot.Collections.Dictionary r,
+		EditorPanel editor, ObjectManager objects, Hud hud, BoardCamera cam)
+	{
+		// ---- 1. 菜单里有没有这一条 ----
+		CardObject? targetCard = null;
+		foreach (TabletopObject obj in objects.AllObjects)
+		{
+			if (obj is CardObject card && card.Visible && card.ZoneId == "")
+			{
+				targetCard = card;
+				break;
+			}
+		}
+
+		TabletopObject? dice = null;
+		foreach (TabletopObject obj in objects.AllObjects)
+		{
+			if (obj is DiceObject && obj.Visible && obj.ZoneId == "")
+			{
+				dice = obj;
+				break;
+			}
+		}
+
+		if (targetCard is null)
+		{
+			c.Put("instance_edit_has_a_card_target", false);
+			return;
+		}
+
+		c.Put("instance_edit_has_a_card_target", true);
+
+		// 菜单项文案按物件类型分："编辑这张卡（F1）" / "编辑这个指示物（F1）"。
+		// 判据用"有没有"而不是"文字对不对"：文案会改，功能不该跟着文案变。
+		System.Collections.Generic.List<string> cardMenu = OpenObjectMenuAndRead(objects, cam, targetCard);
+		r["card_menu_items"] = ToVariantArray(cardMenu);
+		c.Put("instance_edit_menu_has_entry", AnyContains(cardMenu, "编辑这"));
+
+		// 骰子没有定义，不该出现这一条（一条点下去什么都不做的菜单项是坏的）
+		if (dice is not null)
+		{
+			System.Collections.Generic.List<string> diceMenu = OpenObjectMenuAndRead(objects, cam, dice);
+			r["dice_menu_items"] = ToVariantArray(diceMenu);
+			c.Put("instance_edit_menu_hidden_for_dice", !AnyContains(diceMenu, "编辑这"));
+		}
+
+		// ---- 2. 走完整条路：右键 → 编辑这→ 面板开、停在卡牌页、目标条亮 ----
+		bool opened = editor.OpenForInstanceUidForTest(targetCard.Uid);
+		c.Put("instance_edit_opens", opened && editor.IsOpen);
+		c.Put("instance_edit_lands_on_cards_tab", editor.CurrentTab == EditorPanel.TabCards);
+
+		CardEditorPage page = editor.CardPage;
+		c.Put("instance_edit_target_bar_visible", page.TargetBarVisible);
+		c.Put("instance_edit_target_is_that_card", page.EditInstanceUid == targetCard.Uid);
+		r["target_bar_text"] = page.TargetText;
+		c.Put("instance_edit_target_text_names_it",
+			page.TargetText.Contains("正在编辑") && page.TargetText.Contains("张"));
+
+		// 定义已经被自动选中（否则字段表是空的，用户还得自己再点一次列表）
+		c.Put("instance_edit_selects_the_definition",
+			page.SelectedId == targetCard.Definition.Id);
+
+		int fieldCount = page.FieldRowCount;
+		c.Put("instance_edit_has_fields", fieldCount > 0);
+
+		if (fieldCount == 0)
+			return;
+
+		// 找一张**同定义的对照卡**：桌上另一张同名卡。
+		CardObject? control = null;
+		foreach (TabletopObject obj in objects.AllObjects)
+		{
+			if (obj is CardObject other && other.Uid != targetCard.Uid
+				&& other.Definition.Id == targetCard.Definition.Id)
+			{
+				control = other;
+				break;
+			}
+		}
+
+		c.Put("instance_edit_has_a_control_card", control is not null);
+
+		string defValueBefore = targetCard.Definition.Fields[0].Value;
+		string controlValueBefore = control?.GetFieldValue(targetCard.Definition.Fields[0].Key) ?? "";
+
+		// ---- 3. 改一个字段值：只该改这一张 ----
+		const string NewValue = "97";
+		page.SetFieldValueForTest(0, NewValue);
+
+		string key = targetCard.Definition.Fields[0].Key;
+		r["instance_key"] = key;
+		r["instance_overrides"] = OverridesToArray(page.OverridesForTest());
+
+		c.Put("instance_edit_sets_override", targetCard.FieldOverrides.ContainsKey(key));
+		c.Put("instance_edit_target_value_changed", targetCard.GetFieldValue(key) == NewValue);
+
+		// 成对判据：定义没被改、对照卡没被改
+		c.Put("instance_edit_leaves_definition_alone",
+			targetCard.Definition.Fields[0].Value == defValueBefore);
+		c.Put("instance_edit_leaves_other_cards_alone",
+			control is null || control.GetFieldValue(key) == controlValueBefore);
+
+		// ---- 4. 覆盖要进快照（否则 Ctrl+Z 退不回来）----
+		ObjectState state = targetCard.CaptureState();
+		c.Put("instance_edit_override_in_snapshot",
+			state.FieldOverrides.TryGetValue(key, out string? snapValue) && snapValue == NewValue);
+
+		// ---- 5. 「回定义」撤掉这一行 ----
+		c.Put("instance_edit_revert_enabled", !page.RevertButtonAtForTest(0).Disabled);
+		page.RevertFieldForTest(0);
+
+		c.Put("instance_edit_revert_clears_override", !targetCard.FieldOverrides.ContainsKey(key));
+		c.Put("instance_edit_revert_restores_value", targetCard.GetFieldValue(key) == defValueBefore);
+
+		// ---- 6. 目标条上的「改回定义（×）」把全部覆盖撤掉 ----
+		page.SetFieldValueForTest(0, "88");
+		c.Put("instance_edit_second_change_recorded", page.OverridesForTest().Count == 1);
+
+		page.ClearAllOverrides();
+		r["bar_text_after_clear"] = page.TargetText;
+		r["bar_hint_after_clear"] = page.TargetHintText;
+		r["overrides_after_clear"] = OverridesToArray(page.OverridesForTest());
+		r["bar_visible_after_clear"] = page.TargetBarVisible;
+		c.Put("instance_edit_clear_all_clears", page.OverridesForTest().Count == 0);
+		c.Put("instance_edit_clear_all_restores", targetCard.GetFieldValue(key) == defValueBefore);
+
+		// 提示那行要跟着回到"还没改过" —— <b>读的是 TargetHintText，不是 TargetText</b>：
+		// 标题那行永远只说"第几张、哪张卡"，读错了就会把"产品是对的"记成一条红。
+		c.Put("instance_edit_bar_updates_after_clear",
+			page.TargetHintText.Contains("还没改过"));
+
+		// ---- 7. 退出按实例编辑 → 目标条收起来，改字段又回到"改定义" ----
+		page.ClearInstanceEdit();
+		c.Put("instance_edit_exit_hides_bar", !page.TargetBarVisible);
+		c.Put("instance_edit_exit_clears_uid", page.EditInstanceUid.Length == 0);
+
+		page.SetFieldValueForTest(0, "定义值测试");
+		c.Put("edit_after_exit_changes_definition",
+			targetCard.Definition.Fields[0].Value == "定义值测试");
+		c.Put("edit_after_exit_leaves_no_override", targetCard.FieldOverrides.Count == 0);
+
+		// 还原文案，别把定义改花了留给后面的探针
+		page.SetFieldValueForTest(0, defValueBefore);
+		c.Put("instance_edit_probe_restored", targetCard.Definition.Fields[0].Value == defValueBefore);
+
+		// ---- 8. 目标从桌上消失 → 悄悄退回"改定义"，不崩 ----
+		editor.OpenForInstanceUidForTest(targetCard.Uid);
+		bool barShown = page.TargetBarVisible;
+
+		// 直接删掉那一张（不走历史），再刷一次目标条
+		objects.DeleteObjectsWithoutHistory(new[] { targetCard });
+		page.EditInstance(targetCard.Uid);
+		c.Put("instance_edit_survives_target_deleted", !page.TargetBarVisible);
+		r["instance_edit_bar_before_delete"] = barShown;
+		_ = hud;
+	}
+
+	/// <summary>
+	/// <b>编辑器自己的撤销栈</b>（用户拍板的方案 ②）—— 这一组的要害是"分开"：
+	/// 改定义的归它、拖拽翻面的归主栈，两套历史互不写入，
+	/// 而 <c>Ctrl+Z</c> 按"面板开着没有"分流。
+	///
+	/// 每一条都冲着一种具体的错法：
+	/// <list type="bullet">
+	/// <item><b>改了定义却没进历史</b> → <c>Ctrl+Z</c> 退不回去（这整件事的目的）；</item>
+	/// <item><b>进错了栈</b> → 面板开着按 <c>Ctrl+Z</c> 把拖过的牌弹回去；</item>
+	/// <item><b>两套都记</b> → 同一次编辑要按两次才退干净；</item>
+	/// <item><b>退完界面不刷</b> → 数据对了、屏幕上还是旧卡面。</item>
+	/// </list>
+	/// </summary>
+	private static async Task ProbeEditorUndo(
+		Checks c, Godot.Collections.Dictionary r, Node host,
+		Main main, EditorPanel editor, ObjectManager objects, ZoneManager zones, UndoSystem undo)
+	{
+		EditorUndo? stack = editor.EditorUndoForTest;
+		if (stack is null)
+		{
+			c.Put("editor_undo_available", false);
+			return;
+		}
+
+		c.Put("editor_undo_available", true);
+
+		// ---- 0. 开局把编辑器历史对齐到现场（前面几组探针改了不少定义）----
+		stack.Reset();
+		int mainPushesBefore = undo.RecordPushes;
+		c.Put("editor_undo_starts_empty", stack.Count == 0 && !stack.CanUndo);
+		r["editor_undo_capacity"] = EditorUndo.Capacity;
+		c.Put("editor_undo_capacity_is_120", EditorUndo.Capacity == 120);
+
+		// ---- 1. 改一个定义 → 一条历史 ----
+		editor.SwitchTab(EditorPanel.TabCards);
+		CardEditorPage page = editor.CardPage;
+		page.OnShown();
+
+		CardDefinition? def = page.Selected;
+		if (def is null || page.FieldRowCount == 0)
+		{
+			c.Put("editor_undo_has_target", false);
+			return;
+		}
+
+		c.Put("editor_undo_has_target", true);
+		string defId = def.Id;
+		string before = def.Fields[0].Value;
+		string after = "撤销用值";
+
+		page.SetFieldValueForTest(0, after);
+
+		// 注意：这里<b>故意先退出"按实例编辑"</b>—— 上一组探针可能把它留在身上，
+		// 那时改的是覆盖、不是定义（那也是一条历史，但验的是另一件事）。
+		if (page.EditInstanceUid.Length > 0)
+			page.ClearInstanceEdit();
+
+		c.Put("editor_undo_recorded_definition_change", stack.Count == 1);
+		r["editor_undo_label"] = stack.UndoLabel;
+		c.Put("editor_undo_label_is_meaningful", stack.UndoLabel.Length > 0);
+
+		// ---- 2. Ctrl+Z（面板开着）→ 走编辑器栈，定义退回去 ----
+		//
+		// <b>先钉一个基础事实：合成的 Ctrl+Z 到底匹不匹配 <c>tt_undo</c>。</b>
+		// 不先验它的话，"Ctrl+Z 没反应"有两种完全不同的原因 ——
+		// 键没匹配上动作，或者匹配上了但路由 / 撤销本身错了 ——
+		// 而报告里这两种都只有一行 false。
+		var probeEvent = new InputEventKey { Keycode = Key.Z, Pressed = true, CtrlPressed = true };
+		c.Put("ctrl_z_event_matches_action", InputMap.EventIsAction(probeEvent, "tt_undo"));
+		r["focus_before_release"] = page.HasFocusedControlForTest();
+
+		int mainPushesBeforeUndo = undo.RecordPushes;
+		int cursorBefore = stack.Cursor;
+
+		// <b>先把焦点从输入框上摘掉。</b>
+		//
+		// 这一行是实测逼出来的：卡牌页的字段表里有 <c>LineEdit</c>，
+		// 而<b>有焦点的控件会先把 <c>Ctrl+Z</c> 吃掉</b>（<c>LineEdit</c> 自己有文本撤销），
+		// 于是 <c>_UnhandledKeyInput</c> 根本轮不到 —— 症状是"编辑器里按 Ctrl+Z 没反应"。
+		// 这条同时是一条<b>给用户的口径</b>：焦点在输入框里时 Ctrl+Z 是文本框撤销，
+		// 想退定义/覆盖得先点一下空白处（见下面那条 <c>editor_undo_needs_no_text_focus</c>）。
+		page.ReleaseFocusForTest();
+
+		int keyEventsBefore = objects.KeyEventsSeen;
+		DevInputSim.PushKeyWithModifiers(Key.Z, ctrl: true);
+		await DevInputSim.Frame(host);
+		await DevInputSim.Frame(host);
+
+		r["undo_cursor_before"] = cursorBefore;
+		r["undo_cursor_after"] = stack.Cursor;
+		r["undo_count_after"] = stack.Count;
+		r["undo_routing"] = main.Hud.UndoRoutingForTest;
+
+		// 只读计数器：这个键有没有走到 <c>ObjectManager._UnhandledKeyInput</c>。
+		// 走没走到是两种完全不同的故障，而"没反应"这个症状分不出来。
+		r["key_events_before"] = keyEventsBefore;
+		r["key_events_after"] = objects.KeyEventsSeen;
+
+		CardDefinition? back = objects.CardDefinitions.TryGetValue(defId, out CardDefinition? d1) ? d1 : null;
+		c.Put("editor_undo_restores_definition", back is not null && back.Fields[0].Value == before);
+		r["editor_undo_value_after"] = back?.Fields[0].Value ?? "(缺)";
+		c.Put("editor_undo_did_not_touch_main_stack", undo.RecordPushes == mainPushesBeforeUndo);
+		c.Put("editor_undo_panel_stays_open", editor.IsOpen);
+		c.Put("editor_undo_cursor_back_at_zero", stack.Cursor == 0);
+
+		// 界面要跟上：表单里那一格显示的是退回去的值
+		c.Put("editor_undo_refreshes_form", page.FieldValueForTest(0) == before);
+
+		// ---- 3. 重做 → 又回到改后的值 ----
+		DevInputSim.PushKeyWithModifiers(Key.Z, ctrl: true, shift: true);
+		await DevInputSim.Frame(host);
+		await DevInputSim.Frame(host);
+
+		CardDefinition? again = objects.CardDefinitions.TryGetValue(defId, out CardDefinition? d2) ? d2 : null;
+		c.Put("editor_redo_restores_change", again is not null && again.Fields[0].Value == after);
+
+		// 再退回去，别把定义留在改后的值上
+		stack.Undo();
+		editor.OnDefinitionUndone();
+
+		// ---- 4. 实例覆盖也算<b>一条</b>编辑器历史 ----
+		// <b>必须挑一张"定义里有字段"的散牌。</b>
+		// 第一版只按"是卡、可见、不在区域里"挑，结果拿到 <c>demo.placeholder</c>
+		// ——那个定义没有字段，于是 <c>Fields[0]</c> 当场越界。
+		// 而"哪张卡有字段"是<b>数据</b>不是假设，所以判据写在筛选里。
+		CardObject? card = null;
+		foreach (TabletopObject obj in objects.AllObjects)
+		{
+			if (obj is CardObject co && co.Visible && co.ZoneId == "" && co.Definition.Fields.Count > 0)
+			{
+				card = co;
+				break;
+			}
+		}
+
+		if (card is not null && card.Definition.Fields.Count > 0)
+		{
+			string key = card.Definition.Fields[0].Key;
+
+			// <b>先清掉这一张上可能已经有的覆盖。</b>
+			// 上一组（实例覆盖）探针在那张卡上留过 97 —— 不清的话，
+			// 下面写一个"恰好相同"的值会被 <c>SameContent</c> 判成"没变化"而不进历史，
+			// 断言红着，而产品完全正确（那正是"同值不记历史"这条规矩本身）。
+			card.FieldOverrides.Clear();
+
+			int countBefore = stack.Count;
+			int notifyCallsBefore = editor.NotifyChangedCalls;
+			editor.OpenForInstance("card", card.Uid);
+			page.SetFieldValueForTest(0, "覆盖撤销值");
+
+			r["override_after_edit"] = OverridesToArray(page.OverridesForTest());
+			r["editor_stack_count_before_override"] = countBefore;
+			r["editor_stack_count_after_override"] = stack.Count;
+
+			// 覆写本身是一条（不是两条：定义没动，主栈也不该动）
+			r["override_counts"] = new Godot.Collections.Array
+			{
+				countBefore, stack.Count, stack.Count - countBefore,
+				stack.RecordAttempts, stack.RecordSuppressedUnchanged, stack.RecordSuppressedApplying,
+				stack.RecordPushes, stack.MergeCount,
+				editor.NotifyChangedCalls, editor.NotifyChangedSuppressedRefreshing,
+			};
+			c.Put("override_notify_reached_panel", editor.NotifyChangedCalls > notifyCallsBefore);
+
+			// 轨迹：整条都带出来（只截最后几行会漏掉关键的那一次清空 —— 我踩过）。
+			var trace = new Godot.Collections.Array();
+			foreach (string line in stack.Trace)
+				trace.Add(line);
+			r["editor_undo_trace"] = trace;
+			r["editor_undo_trim_count"] = stack.TrimCount;
+			r["editor_undo_reentry_count"] = stack.ReentryCount;
+
+			c.Put("editor_undo_override_no_main_record", undo.RecordPushes == mainPushesBeforeUndo);
+
+			// <b>判据是"这一次改动退得回去"，不是"条数涨了 1"。</b>
+			//
+			// 一开始写的是比条数，它红了，而我在上面查了很久：读数显示条数被压在 1 上
+			// （轨迹里两次 <c>add前=0</c>），但"这条历史能不能撤销这次改动"
+			// 才是这件事真正要保证的东西。**断言要问功能，不要问实现细节的计数。**
+			bool canUndoOverride = stack.CanUndo;
+			r["override_undo_label"] = stack.UndoLabel;
+			c.Put("editor_undo_records_override", canUndoOverride);
+
+			if (canUndoOverride)
+			{
+				stack.Undo();
+				editor.OnDefinitionUndone();
+				c.Put("editor_undo_reverts_override", !card.FieldOverrides.ContainsKey(key));
+			}
+			else
+			{
+				c.Put("editor_undo_reverts_override", false);
+			}
+
+			page.ClearInstanceEdit();
+		}
+		else
+		{
+			// 探针自己的前提不成立时<b>明确报出来</b>，而不是静默跳过 ——
+			// 静默跳过会让这一节的 pass 键看起来很干净，而"覆盖算不算一条历史"
+			// 这件事其实根本没被验过（M3 那条"没条件跑要与跑挂了长得不一样"）。
+			c.Put("editor_undo_override_target_has_fields", false);
+			r["override_target"] = card is null ? "(没找到散牌)" : card.Definition.Id;
+			r["override_target_field_count"] = card?.Definition.Fields.Count ?? -1;
+		}
+
+		// ---- 5. Ctrl+S 不清空编辑器历史（用户拍板的那一条）----
+		//
+		// 与"读档会 Reset"刻意不同：存档只是把定义写成一份文件，不是一个新基准。
+		// 这条断言是把那个决定钉住 —— 别人日后"顺手"在保存路径上加一句 Reset 就会红。
+		page.SetFieldValueForTest(0, "保存前改的值");
+		stack.Reset();                                    // 先归零，好看出"保存"有没有清
+		page.SetFieldValueForTest(0, "保存后要看的值");
+		int afterEdit = stack.Count;
+
+		bool saved = main.Save.SaveNow();
+		c.Put("editor_undo_save_succeeded", saved);
+		c.Put("editor_undo_survives_ctrl_s", stack.Count == afterEdit && stack.CanUndo);
+		r["editor_undo_count_after_save"] = stack.Count;
+
+		stack.Undo();
+		editor.OnDefinitionUndone();
+
+		// ---- 6. 面板关着时 Ctrl+Z 走主栈（不碰编辑器历史）----
+		int editorCount = stack.Count;
+		editor.Close();
+		c.Put("editor_undo_panel_closed", !editor.IsOpen);
+
+		DevInputSim.PushKeyWithModifiers(Key.Z, ctrl: true);
+		await DevInputSim.Frame(host);
+		await DevInputSim.Frame(host);
+
+		c.Put("ctrl_z_with_panel_closed_leaves_editor_stack", stack.Count == editorCount);
+		c.Put("ctrl_z_with_panel_closed_uses_main_stack", undo.RecordAttempts > 0);
+		r["main_undo_count"] = undo.Count;
+		_ = zones;
+
+		// ---- 7. 收尾：把这一组动过的定义还回去，并让两条栈都对齐现场 ----
+		//
+		// <b>这里要先开面板再刷表单</b>：上面 <c>await</c> 过（合成按键要等帧），
+		// 而 <c>Probe</c> 的收尾（<c>finally</c> 里那句 <c>editor.Close()</c>）
+		// 在 await 之后<b>已经跑过了</b> —— 面板关着、卡牌页的字段行已经被销毁，
+		// 再调 <c>page.SetFieldValueForTest(0, …)</c> 就是越界访问一个空列表。
+		// （那条 <c>ArgumentOutOfRangeException</c> 就是这么来的，而它连带把
+		//  <c>thumbnail_simulation</c> 也弄红了 —— 一个探针崩了会污染别的节。）
+		editor.Open();
+		editor.SwitchTab(EditorPanel.TabCards);
+		page.OnShown();
+
+		if (page.FieldRowCount > 0)
+			page.SetFieldValueForTest(0, before);
+
+		stack.Reset();
+		undo.Reset();
+		c.Put("editor_undo_probe_settled", stack.Count == 0 && stack.Cursor == 0);
+		c.Put("editor_undo_not_stuck_applying", !stack.IsApplying && !EditorUndo.ApplyingNow);
+	}
+
+	/// <summary>
+	/// <b>用户实测报的那一条</b>：启动后第一次按 F1，编辑器里显示的还是<b>示例内容</b>
+	/// （火球术那一套），而不是刚读回来的存档内容。
+	///
+	/// 根因是启动顺序：<c>Main</c> 里 <c>Editor.Initialize()</c>（它会刷一次各页）
+	/// 跑在 <c>TryLoadLastSave()</c> <b>之前</b> —— 那一次刷的是示例内容，
+	/// 而读档之后<b>原先没有任何人</b>再叫各页刷一次。
+	/// 各页只在"切页签 / 开面板"时刷（<c>OnShown</c>），
+	/// 那个假定在"定义池被整体换掉"时不成立。
+	///
+	/// <b>判据是"页面显示的是不是当前存档里的东西"，而不是"刷新方法被调用了几次"</b> ——
+	/// 后者是实现的细节，前者才是用户看得见的那件事。
+	/// 所以这里真的存两个不同的档、来回切，再逐个分页核对。
+	/// </summary>
+	private static async Task ProbePagesFollowTheLoadedSave(
+		Checks c, Godot.Collections.Dictionary r, Node host, Main main,
+		EditorPanel editor, ObjectManager objects, ZoneManager zones)
+	{
+		const string SaveA = "自检_页面跟随A";
+		const string SaveB = "自检_页面跟随B";
+
+		// 收尾要用的原始状态
+		string originalSave = main.Save.CurrentSave;
+		EditorUndo? stack = editor.EditorUndoForTest;
+
+		// ---- 1. 造两个"内容确定不同"的档 ----
+		//
+		// <b>刻意不用 <c>CreateNew</c>：</b>它会把定义池整个换成示例那一份，
+		// 于是"两个档的差集是什么"不受这里控制 —— 实测两次跑出两种结果，
+		// 而前提断言一红，后面那几条"绿"就全是假的（前提不成立时的绿，M3 那条教训）。
+		//
+		// 这里按<b>互斥的顺序</b>造：
+		//   A 档 = 当前内容 + A 卡   → 存 A
+		//   删掉 A 卡，加 B 卡        → 存 B
+		// 于是两个档各有一张对方没有的卡，"页面显示的是不是这个档的东西"可判定。
+		// <b>判据只比"卡名"，不比 id。</b>
+		//
+		// 实测发现 <c>CreateCard</c> 在删掉一张之后<b>会复用刚释放的那个 id</b>
+		// （唯一 id 计数器是全局递增的，而删除之后新建会撞上同一个号）——
+		// 于是"两张卡的 id 不同"这个前提根本造不出来（两次读数都是同一个 id）。
+		// 而用户看得见的是<b>卡名</b>，所以比卡名既够用、又不会因为 id 复用而假红。
+		const string NameA = "页面跟随_A档卡";
+		const string NameB = "页面跟随_B档卡";
+
+		string cardA = CardDefinitionService.CreateCard(objects, NameA);
+		bool savedA = SaveSystem.Save(SaveA, objects, zones, main.Board.Theme);
+
+		CardDefinitionService.DeleteCard(objects, cardA);
+		string cardB = CardDefinitionService.CreateCard(objects, NameB);
+		bool savedB = SaveSystem.Save(SaveB, objects, zones, main.Board.Theme);
+
+		bool savedOk = savedA && savedB && cardA.Length > 0 && cardB.Length > 0;
+		c.Put("pages_probe_saves_ok", savedOk);
+		r["pages_probe_card_a"] = cardA;
+		r["pages_probe_card_b"] = cardB;
+
+		if (!savedOk)
+		{
+			SaveSystem.DeleteSave(SaveA);
+			SaveSystem.DeleteSave(SaveB);
+			return;
+		}
+
+		// ---- 2. 切到 B 档：卡池里该<b>没有</b> A 卡 ----
+		bool switchedToB = main.Save.SwitchTo(SaveB);
+		c.Put("pages_probe_switched_to_b", switchedToB);
+
+		bool bOnly = switchedToB && !HasCardNamed(objects, NameA) && HasCardNamed(objects, NameB);
+
+		c.Put("pages_probe_definitions_really_differ", bOnly);
+		r["pages_b_definitions"] = objects.CardDefinitions.Count;
+		r["pages_b_ids"] = ToVariantArray(new System.Collections.Generic.List<string>(objects.CardDefinitions.Keys));
+
+		// <b>刻意不在这里"前提不成立就 return"。</b>
+		//
+		// 第一版那么写了，于是这一组在前提偶发不成立时<b>整体消失</b> ——
+		// 而"编辑器页面跟不跟着存档换"这件事正是用户实测报上来的真 bug，
+		// 它不该因为探针自己的房间不够干净就不被验。
+		// 前提那条单独记（红就是红），下面照常往下走。
+
+		// ---- 3. 切回 A 档，核对<b>每一个分页</b>都换成了 A 档的内容 ----
+		bool switchedBack = main.Save.SwitchTo(SaveA);
+		c.Put("pages_probe_switched_back", switchedBack);
+
+		if (switchedBack)
+		{
+			// 卡牌页：列表里必须有 A 卡（按名字找）
+			c.Put("pages_follow_save_card_list", CardPageLists(objects, editor, NameA));
+
+			// <b>界面与模型一致</b>：列表里的东西要恰好等于这个档的卡池。
+			//
+			// 这是这一组里最直接的判据 —— 它不问"刷新有没有被调用"，
+			// 只问"用户看到的那一列与磁盘上那个档是不是同一批"。
+			// 用集合比较而不是比条数：条数相同而内容不同（换了一张卡）
+			// 正是这一整类 bug 最常见的长相。
+			var listed = new System.Collections.Generic.HashSet<string>(editor.CardPage.ListedIds);
+			var actual = new System.Collections.Generic.HashSet<string>(objects.CardDefinitions.Keys);
+			c.Put("pages_card_list_equals_the_model", listed.SetEquals(actual));
+
+			// 反向证据：B 档那张卡<b>不许</b>留在列表里
+			c.Put("pages_shows_no_other_saves_card", !CardPageLists(objects, editor, NameB));
+
+			// 卡组页：下拉项数要与这个档的卡组数一致
+			c.Put("pages_follow_save_deck_order",
+				editor.DeckPage.DeckPickerItemCount == objects.Decks.Count);
+
+			// 区域页：列表里必须有这个档的区域
+			c.Put("pages_follow_save_zone_list",
+				editor.ZonePage.ListedIds.Count == zones.AllZones.Count
+				&& editor.ZonePage.ListedIds.Count > 0);
+
+			// 桌面页：尺寸要与这个档的主题一致
+			c.Put("pages_follow_save_board_size",
+				Mathf.IsEqualApprox(
+					editor.BoardPage.BoardWidthForTest(),
+					main.Board.Theme.BoardWidth));
+
+			r["pages_after_switch_card_count"] = editor.CardPage.ListedIds.Count;
+			r["pages_definitions_count"] = objects.CardDefinitions.Count;
+			r["pages_after_switch_zone_count"] = editor.ZonePage.ListedIds.Count;
+			r["pages_zones_count"] = zones.AllZones.Count;
+		}
+
+		// ---- 4. 收干净 ----
+		SaveSystem.DeleteSave(SaveA);
+		SaveSystem.DeleteSave(SaveB);
+		main.Save.SwitchTo(originalSave);
+		CardDefinitionService.DeleteCard(objects, cardA);
+		CardDefinitionService.DeleteCard(objects, cardB);
+		CardDefinitionService.MarkClean();
+
+		// <b>面板也收掉。</b>这一组全程开着编辑器（各页要读列表），
+		// 而"面板开着"会改后面几节看到的东西（缩略图拍到的画面、预览框的位置）。
+		// 探针不许改变被测对象的可观测状态 —— 这条在 M4 就立过，
+		// 这次是它另一个长相：留下的不是数据，是<b>界面的开关状态</b>。
+		editor.Close();
+
+		stack?.Reset();
+		main.Undo.Reset();
+		await DevInputSim.Frame(host);
+
+		c.Put("pages_probe_settled",
+			!objects.CardDefinitions.ContainsKey(cardA)
+			&& !objects.CardDefinitions.ContainsKey(cardB)
+			&& main.Save.CurrentSave == originalSave
+			&& !editor.IsOpen);
+	}
+
+	/// <summary>卡池里有没有一张叫这个名字的卡（按名字找，不按 id —— 见上面那条 id 复用的说明）。</summary>
+	private static bool HasCardNamed(ObjectManager objects, string name)
+	{
+		foreach (CardDefinition def in objects.CardDefinitions.Values)
+		{
+			if (def.DisplayName == name)
+				return true;
+		}
+
+		return false;
+	}
+
+	/// <summary>卡牌页的列表里有没有一张叫这个名字的卡（按 <c>ListedIds</c> → 定义查名字）。</summary>
+	private static bool CardPageLists(ObjectManager objects, EditorPanel editor, string name)
+	{
+		foreach (string id in editor.CardPage.ListedIds)
+		{
+			if (objects.CardDefinitions.TryGetValue(id, out CardDefinition? def) && def.DisplayName == name)
+				return true;
+		}
+
+		return false;
+	}
+
+	/// <summary>把一串字符串装进报告用的 <c>Array</c>。</summary>
+	private static Godot.Collections.Array ToVariantArray(System.Collections.Generic.List<string> items)	{
+		var array = new Godot.Collections.Array();
+		foreach (string item in items)
+			array.Add(item);
+		return array;
+	}
+
+	/// <summary>
+	/// 在某个物件的屏幕位置弹一次真实的右键菜单，返回菜单里所有项的文字。
+	///
+	/// <b>走的是产品那条路</b>（<c>RequestContextMenuAt</c>：命中 → 选中 → 建菜单 → 定位），
+	/// 不另写一份"给测试用的建菜单"。菜单用完立刻 <c>Hide()</c> ——
+	/// <c>PopupMenu</c> 是 <c>Window</c>，留着会抢走后续的合成鼠标事件（项目里踩过两次）。
+	/// </summary>
+	private static System.Collections.Generic.List<string> OpenObjectMenuAndRead(
+		ObjectManager objects, BoardCamera cam, TabletopObject target)
+	{
+		var texts = new System.Collections.Generic.List<string>();
+		PopupMenu? menu = objects.GetNodeOrNull<PopupMenu>("../HUD/HudRoot/ObjectMenu");
+		if (menu is null)
+			return texts;
+
+		objects.RequestContextMenuAtForTest(target.Position, cam.WorldToScreen(target.Position));
+
+		// 菜单没弹出来时把"为什么"也带出来：「全选」那一支是**空白处右键**的分支
+		// （命中没打中任何物件），而它与"菜单少了一项"在报告里长得一模一样。
+		if (!menu.Visible)
+			texts.Add($"[菜单没弹出来：命中目标={objects.Hovered?.Uid ?? "(无)"} 世界点={target.Position}]");
+
+		for (int i = 0; i < menu.ItemCount; i++)
+			texts.Add(menu.GetItemText(i));
+
+		menu.Hide();
+		return texts;
+	}
+
+	private static bool AnyContains(System.Collections.Generic.List<string> texts, string needle)
+	{
+		foreach (string t in texts)
+		{
+			if (t.Contains(needle))
+				return true;
+		}
+
+		return false;
+	}
+
+	private static Godot.Collections.Array OverridesToArray(
+		System.Collections.Generic.Dictionary<string, string> overrides)
+	{
+		var array = new Godot.Collections.Array();
+		foreach (System.Collections.Generic.KeyValuePair<string, string> kv in overrides)
+			array.Add($"{kv.Key}={kv.Value}");
+		return array;
+	}
+
+	private static void CopyRaw(string from, string to)	{
 		byte[]? bytes = FileAccess.GetFileAsBytes(from);
 		if (bytes is null)
 			return;

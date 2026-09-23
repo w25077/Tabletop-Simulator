@@ -70,6 +70,9 @@ public partial class DeckEditorPage : EditorPage
 		RefreshTargetPicker();
 	}
 
+	/// <summary>自检用：卡组下拉里列了几项（"读到新模型了没有"的判据）。</summary>
+	internal int DeckPickerItemCount => IsInstanceValid(_deckPicker) ? _deckPicker.ItemCount : -1;
+
 	// ------------------------------------------------------------------ 列表刷新
 
 	private void RefreshDeckPicker()

@@ -31,6 +31,14 @@ public partial class ObjectManager : Node2D, IWorldPicker, IWheelHandler
 		PullFromPile,
 		DissolvePile,
 		RollDice,
+		/// <summary>
+		/// 「编辑这张」—— 打开 F1 编辑器并停在这一张牌上（M5 遗留口子的入口）。
+		///
+		/// 它<b>不是</b>对桌面的操作，而是"把这个物件交给编辑器看"：
+		/// 用户已经在用右键菜单了，那是他最可能去找的地方（M5.5 第 4c 条同一条教训：
+		/// 功能早就有，只是入口不可发现）。
+		/// </summary>
+		EditInstance,
 		// 面数与数量用区间
 		SidesBase = 100,
 		CountBase = 200,
@@ -202,6 +210,19 @@ public partial class ObjectManager : Node2D, IWorldPicker, IWheelHandler
 	[Signal] public delegate void CardDefinitionChangedEventHandler(string definitionId);
 
 	[Signal] public delegate void TokenDefinitionChangedEventHandler(string definitionId);
+
+	/// <summary>
+	/// 用户在右键菜单里点了「编辑这张」。
+	///
+	/// <b>为什么发信号而不是直接去开编辑器：</b>与上面两个定义信号同一条理由 ——
+	/// 物件系统不该知道编辑器长什么样（它连 <c>EditorPanel</c> 这个类型都不认识）。
+	/// 它只负责说"用户想在编辑器里看这一个物件"，
+	/// 由 <c>Main</c> 把它接到面板上（与 <c>Hud.RequestToggleEditor</c> 同一个套路）。
+	///
+	/// <paramref name="kind"/> 是 <c>"card"</c> / <c>"token"</c>（决定切到哪一页），
+	/// <paramref name="uid"/> 是那个物件（编辑器据此找到实例级覆盖）。
+	/// </summary>
+	[Signal] public delegate void EditInstanceRequestedEventHandler(string kind, string uid);
 
 	// ------------------------------------------------------------------ 装配
 
@@ -1098,9 +1119,42 @@ public partial class ObjectManager : Node2D, IWorldPicker, IWheelHandler
 			obj.QueueRedraw();
 	}
 
-	/// <summary>给定一组物件里离某个世界坐标最近的那个。</summary>
-	private static TabletopObject? NearestTo(IReadOnlyList<TabletopObject> objects, Vector2 worldPos)
+	/// <summary>
+	/// <b>定义池整体被换掉了</b>（编辑器撤销写回定义、或读档）之后的收尾。
+	///
+	/// 与 <see cref="ApplyCardDefinition"/> 的区别：那个是"某一个定义改了"，
+	/// 而这里是"池子里那一批对象<b>整批换成了新对象</b>"—— 撤销快照写回时
+	/// <c>CardDefinitions</c> 里装的是刚从 JSON 造出来的新对象，
+	/// 场上那些卡还<b>持有旧的</b>，于是"撤销了但桌子没变"。
+	///
+	/// 逐个把新定义交给场上的实例，再整体重画；实例级覆盖刻意不动
+	/// （那条规矩见 <see cref="ApplyCardDefinition"/>）。
+	/// </summary>
+	public void NotifyDefinitionsReloaded()
 	{
+		foreach (TabletopObject obj in _drawOrder)
+		{
+			switch (obj)
+			{
+				case CardObject card when CardDefinitions.TryGetValue(card.Definition.Id, out CardDefinition? def):
+					card.SetDefinition(def);
+					break;
+
+				case TokenObject token when TokenDefinitions.TryGetValue(token.Definition.Id, out TokenDefinition? tdef):
+					token.SetDefinition(tdef);
+					break;
+			}
+
+			obj.QueueRedraw();
+		}
+
+		// 空串 = "整个池子都变了"（与读档那条路同一个约定）。
+		EmitSignal(SignalName.CardDefinitionChanged, "");
+		EmitSignal(SignalName.TokenDefinitionChanged, "");
+	}
+
+	/// <summary>给定一组物件里离某个世界坐标最近的那个。</summary>
+	private static TabletopObject? NearestTo(IReadOnlyList<TabletopObject> objects, Vector2 worldPos)	{
 		TabletopObject? best = null;
 		float bestDistance = float.MaxValue;
 
@@ -1275,20 +1329,35 @@ public partial class ObjectManager : Node2D, IWorldPicker, IWheelHandler
 	}
 
 	/// <summary>
-	/// 该物件所在的"一摞"的全部成员（底 → 顶）；不在任何 ≥2 的叠放组里时返回 <c>null</c>。
+	/// 该物件所在的"一摞"的全部成员（底 → 顶）；不在任何 ≥2 的组里时返回 <c>null</c>。
 	///
 	/// 两种叠放组都要认：桌面上的<b>自由堆</b>（靠 <c>PileId</c> 认），
 	/// 与<b>叠放区域</b>（牌库 / 弃牌堆，靠 <c>ZoneId</c> 认 —— 后者的成员
 	/// <c>PileId</c> 恒为 0，只查 PileId 会漏掉整个牌库）。
+	///
+	/// <b>2026-09-23 修订：非叠放区域的成员也算"一组"。</b>
+	/// 用户实测报的："在区域内对卡组进行翻转有问题，和在桌面上操作的结果不一致。"
+	/// 并排量出来的读数（见 <c>DevZoneSim.FlipConsistencyAcrossContexts</c>）：
+	/// 同样"指着一组成的牌按 F"，<b>叠放区域（牌库）翻整组、横排区域（手牌）只翻一张</b>
+	/// —— 因为这里当时只认 <c>SortMode.Stack</c> 的区域，横排/扇形/自由排版一律返回 <c>null</c>，
+	/// 于是目标被缩成"悬停的那一张"。
 	/// </summary>
 	private List<TabletopObject>? StackAround(TabletopObject obj)
 	{
 		if (obj.PileId != 0 && _piles.TryGetValue(obj.PileId, out Pile? pile) && pile.Count >= 2)
 			return new List<TabletopObject>(pile.Members);
 
-		Zone? zone = _zones?.StackZoneOf(obj);
-		if (zone is not null && zone.Count >= 2)
-			return new List<TabletopObject>(zone.Members);
+		// 任何区域的"全部成员"都算一组 —— 不再按 <c>SortMode</c> 分。
+		//
+		// 理由不是"统一好看"，而是**用户指着的那一组成的东西就是一个整体**：
+		// 一手横排的牌、摊在公共区的一堆牌，与一摞叠起来的牌在这一点上没有区别。
+		// 具体翻法（整组反过来 / 只翻顶上一张）再由 <c>F</c> / <c>Shift+F</c> 决定。
+		if (_zones is not null)
+		{
+			Zone? zone = _zones.ZoneOf(obj);
+			if (zone is not null && zone.Count >= 2)
+				return new List<TabletopObject>(zone.Members);
+		}
 
 		return null;
 	}
@@ -1372,6 +1441,71 @@ public partial class ObjectManager : Node2D, IWorldPicker, IWheelHandler
 	/// </summary>
 	private void RecordHistory(string label, string mergeKey = "") => Undo?.Record(label, mergeKey);
 
+	/// <summary>
+	/// <b>只翻最上面那一张</b>（用户拍板：<c>Shift+F</c>）。
+	///
+	/// 与 <see cref="FlipObjects"/> 的分工：
+	/// <list type="bullet">
+	/// <item><c>F</c> → 整组反过来（见 <see cref="FlipObjects"/>）；</item>
+	/// <item><c>Shift+F</c> → 只翻最上面那一张，次序不动。</item>
+	/// </list>
+	///
+	/// "最上面那一张"按语境取：
+	/// <list type="bullet">
+	/// <item>叠放（自由堆 / 叠放区域）→ <b>成员次序里的最后一个</b>（那就是顶牌）；</item>
+	/// <item>非叠放（横排 / 扇形 / 自由排版）→ 成员次序对位置没有意义，
+	///   所以用<b>绘制次序最高的那个</b>（画面上压在最上面的那张），
+	///   那正是用户指着的那一张。</item>
+	/// </list>
+	/// </summary>
+	public void FlipTopOnly(IReadOnlyList<TabletopObject> targets)
+	{
+		if (targets.Count == 0)
+			return;
+
+		TabletopObject? top = TopOfGroup(targets);
+		if (top is null)
+			return;
+
+		top.IsFaceDown = !top.IsFaceDown;
+		top.QueueRedraw();
+
+		RecordHistory($"翻最上面一张（{top.Uid}）");
+	}
+
+	/// <summary>一组里"最上面"的那一个（叠放按成员次序，其余按绘制次序）。</summary>
+	private TabletopObject? TopOfGroup(IReadOnlyList<TabletopObject> targets)
+	{
+		if (targets.Count == 0)
+			return null;
+
+		// 叠放：成员次序的末尾就是顶牌
+		int pileId = targets[0].PileId;
+		if (pileId != 0 && _piles.TryGetValue(pileId, out Pile? pile) && pile.Count == targets.Count)
+			return pile.Top;
+
+		Zone? zone = _zones?.StackZoneOf(targets[0]);
+		if (zone is not null && zone.Count == targets.Count && zone.Members.Count > 0)
+			return zone.Top;
+
+		// 其余（横排 / 扇形 / 自由排版 / 桌面一把散牌）：取绘制次序最高的那个 ——
+		// 那就是画面上压在最上面的，也是用户指着的那一张。
+		TabletopObject? best = null;
+		int bestIndex = -1;
+
+		foreach (TabletopObject obj in targets)
+		{
+			int index = _drawOrder.IndexOf(obj);
+			if (index > bestIndex)
+			{
+				bestIndex = index;
+				best = obj;
+			}
+		}
+
+		return best;
+	}
+
 	/// <summary>目标是否构成一整摞；是则整摞翻过来并返回 true。</summary>
 	private bool TryFlipWholeStack(IReadOnlyList<TabletopObject> targets)
 	{
@@ -1393,8 +1527,13 @@ public partial class ObjectManager : Node2D, IWorldPicker, IWheelHandler
 			return true;
 		}
 
-		// (b) 叠放区域（牌库 / 弃牌堆）
-		Zone? zone = _zones?.StackZoneOf(targets[0]);
+		// (b) 区域里的整组（牌库 / 弃牌堆，以及横排 / 扇形 / 自由排版的区域）
+		//
+		// <b>2026-09-23 修订：不再限定 <c>SortMode.Stack</c>。</b>
+		// 用户的诉求是"区域里的整组也整个反过来，与桌面一致"，
+		// 而叠放与非叠放的区别只在于<b>看不看得出来</b>（横排的位置由排版算、
+		// 与成员次序无关，所以次序反转在画面上看不出来）—— 不该让"翻不翻"取决于排版。
+		Zone? zone = _zones?.ZoneOf(targets[0]);
 		if (zone is not null && zone.Count == targets.Count)
 		{
 			zone.FlipOver();                       // 反转成员 + 翻正反面 + 重排
@@ -2024,9 +2163,18 @@ public partial class ObjectManager : Node2D, IWorldPicker, IWheelHandler
 
 	// ------------------------------------------------------------------ 右键菜单
 
+	/// <summary>
+	/// 自检用：在某个屏幕位置弹一次<b>真实的</b>右键菜单。
+	///
+	/// 只是把 <c>ViewportController.ContextMenuRequested</c> 那条信号换成直接调用 ——
+	/// 走的是与"用户右键"完全相同的处理（命中 → 选中 → 建菜单 → 定位），
+	/// 而不是另写一份"给测试用的建菜单"。
+	/// </summary>
+	internal void RequestContextMenuAtForTest(Vector2 worldPos, Vector2 screenPos) =>
+		OnContextMenuRequested(worldPos, screenPos);
+
 	private void OnContextMenuRequested(Vector2 worldPos, Vector2 screenPos)
-	{
-		if (_menu is null)
+	{		if (_menu is null)
 			return;
 
 		TabletopObject? target = PickTopmostExcluding(worldPos, null);
@@ -2107,11 +2255,38 @@ public partial class ObjectManager : Node2D, IWorldPicker, IWheelHandler
 		if (_menu is null)
 			return;
 
+		// 「编辑这张」要知道"用户右键的是哪一个"。
+		//
+		// <b>为什么不能等到菜单项被点的时候再解析：</b>右键菜单弹出之后，
+		// 用户可能把鼠标移到别处、选中集也可能已经变了，而
+		// <c>ResolveActionTargets</c> 那套"悬停优先"的规则是按<b>当下</b>算的。
+		// 菜单里的文案（"复制 3 个"）也是按当下算的 —— 于是这个目标必须
+		// 在<b>建菜单那一刻</b>定下来，与文案同源。
+		_editTarget = target;
+
 		_menu.Clear();
 		_menu.AddItem("翻面 (F)", (int)MenuId.Flip);
 		_menu.AddItem("顺时针 90°", (int)MenuId.RotateCw);
 		_menu.AddItem("逆时针 90°", (int)MenuId.RotateCcw);
 		_menu.AddItem("重置旋转", (int)MenuId.ResetRotation);
+
+		// ---- 「编辑这张 / 编辑这个」（M5 遗留口子的入口）----
+		//
+		// <b>为什么放在最上面一档、而不是塞进某个子菜单：</b>
+		// 这条口子的全部内容就是"入口不可发现" —— 编辑器的实例级覆盖数据层早就有了
+		// （<c>CardObject.SetFieldOverride</c>），缺的只是"从桌上这张牌走过去"这一步。
+		// 藏进子菜单等于把它又藏起来一次。
+		//
+		// 只对**有定义**的物件出现：骰子/计数器没有"定义"这回事
+		// （计数器的内容全在实例状态里），给它们显示一条点下去什么都不做的菜单项是坏的。
+		if (target is CardObject or TokenObject)
+		{
+			// 文案按物件类型分开写："编辑这张卡" / "编辑这个指示物" ——
+			// 拼成 $"编辑这{what}" 会得到"编辑这卡"，读着别扭（第一版就是那么写的）。
+			string label = target is CardObject ? "编辑这张卡（F1）" : "编辑这个指示物（F1）";
+			_menu.AddItem(label, (int)MenuId.EditInstance);
+		}
+
 		_menu.AddSeparator();
 		_menu.AddItem($"复制 {_selection.Count} 个", (int)MenuId.Duplicate);
 		_menu.AddItem($"删除 {_selection.Count} 个", (int)MenuId.Delete);
@@ -2167,10 +2342,42 @@ public partial class ObjectManager : Node2D, IWorldPicker, IWheelHandler
 		}
 	}
 
+	/// <summary>
+	/// 右键菜单建出来时"用户指着的那个物件"（M5 遗留口子：「编辑这张」的依据）。
+	///
+	/// 见 <see cref="BuildMenu"/> 里的说明：菜单里的文案与动作目标都必须在
+	/// <b>建菜单那一刻</b>定下来，不能等菜单项被点时再按"悬停优先"重算。
+	/// </summary>
+	private TabletopObject? _editTarget;
+
+	/// <summary>
+	/// 把"编辑这一个物件"这件事交给外面（<c>Main</c> 接到编辑器上）。
+	///
+	/// 只认有定义的物件：卡牌（<c>CardObject</c>）与指示物（<c>TokenObject</c>）。
+	/// 骰子与计数器的"内容"全在实例状态里，没有可编辑的定义，
+	/// 而它们本来就能在桌面上直接改（`[ ]` 旋转、右键加减血量）。
+	/// </summary>
+	private void RequestEditInstance()
+	{
+		if (_editTarget is null || !IsInstanceValid(_editTarget))
+			return;
+
+		string kind = _editTarget switch
+		{
+			CardObject => "card",
+			TokenObject => "token",
+			_ => "",
+		};
+
+		if (kind.Length == 0)
+			return;
+
+		EmitSignal(SignalName.EditInstanceRequested, kind, _editTarget.Uid);
+	}
+
 	private void OnMenuItemPressed(long id)
 	{
 		int menuId = (int)id;
-
 		// 计数器的"上限"子菜单（M5.5 P4）。
 		//
 		// <b>这一段必须排在下面那几条区间判断之前</b>：那些判断写的是
@@ -2207,6 +2414,10 @@ public partial class ObjectManager : Node2D, IWorldPicker, IWheelHandler
 
 		switch ((MenuId)menuId)
 		{
+			case MenuId.EditInstance:
+				RequestEditInstance();
+				break;
+
 			case MenuId.Flip:
 				FlipSelection();
 				break;
@@ -2425,6 +2636,39 @@ public partial class ObjectManager : Node2D, IWorldPicker, IWheelHandler
 		if (Undo is not null && (key.IsActionPressed("tt_undo") || key.IsActionPressed("tt_redo")))
 		{
 			bool redo = key.IsActionPressed("tt_redo");
+
+			// <b>两套历史，按"编辑器开着没有"分流</b>（用户拍板）：
+			// 面板开着 → Ctrl+Z 退编辑器改的定义 / 实例覆盖；
+			// 关着 → 退桌面动作。
+			//
+			// 界面上必须说得清这件事，所以底部提示栏里那一条写了两种键。
+			// 另一条路是显式的：<c>Ctrl+Alt+Z</c> 永远退桌面那条
+			// （面板开着时想撤刚才拖的那一下，不必先去关面板）。
+			EditorPanel? editor = _hud?.EditorPanelForShortcuts;
+			EditorUndo? editorUndo = editor?.EditorUndoForTest;
+			bool forceTable = key.IsActionPressed("tt_undo_table");
+			bool useEditor = editor is not null && editor.IsOpen && editorUndo is not null && !forceTable;
+
+			if (useEditor)
+			{
+				string editorLabel = redo ? editorUndo!.RedoLabel : editorUndo!.UndoLabel;
+				bool didEditor = redo ? editorUndo!.Redo() : editorUndo!.Undo();
+
+				if (didEditor)
+				{
+					// 撤销改了定义 → 界面要跟上（列表 / 表单 / 预览 / 桌面上的实例）。
+					editor!.OnDefinitionUndone();
+					_hud?.Toast($"编辑器：{editorLabel}");
+				}
+				else
+				{
+					_hud?.Toast(redo ? "编辑器没有可重做的改动" : "编辑器没有可撤销的改动");
+				}
+
+				GetViewport().SetInputAsHandled();
+				return;
+			}
+
 			string label = redo ? Undo.RedoLabel : Undo.UndoLabel;
 			bool did = redo ? Undo.Redo() : Undo.Undo();
 
@@ -2478,8 +2722,19 @@ public partial class ObjectManager : Node2D, IWorldPicker, IWheelHandler
 			List<TabletopObject> targets = ResolveActionTargets();
 			if (targets.Count > 0)
 			{
+				// <b>F / Shift+F 的分工（用户拍板）：</b>
+				//   F       → 整组整个反过来（次序反转 + 每张翻面）
+				//   Shift+F → 只翻最上面那一张，次序不动
+				//
+				// 这两件事都要有：验牌时既会"把这一副整个翻过来看看",
+				// 也会"只把顶上那张翻开看看"。
 				if (key.IsActionPressed("tt_flip"))
-					FlipObjects(targets);
+				{
+					if (key.ShiftPressed)
+						FlipTopOnly(targets);
+					else
+						FlipObjects(targets);
+				}
 				else if (key.IsActionPressed("tt_rotate_cw"))
 					RotateObjects(targets, GameConfig.KeyRotateStepDegrees);
 				else if (key.IsActionPressed("tt_rotate_ccw"))

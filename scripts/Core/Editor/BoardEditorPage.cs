@@ -46,6 +46,7 @@ public partial class BoardEditorPage : EditorPage
 
 		_backgroundImage.ItemSelected += _ => ApplyImage();
 		GetNode<Button>("Scroll/Column/BgRow/RescanButton").Pressed += RefreshImageList;
+		GetNode<Button>("Scroll/Column/BgRow/ImportButton").Pressed += OnImportPressed;
 		_background.ColorChanged += _ => Mutate(theme => theme.BackgroundColor = _background.Color);
 		_tileBackground.Toggled += on => Mutate(theme => theme.BackgroundTile = on);
 		_width.TextSubmitted += _ => ApplySize();
@@ -110,9 +111,34 @@ public partial class BoardEditorPage : EditorPage
 		}
 
 		_imageHint.Text = _backgroundImage.ItemCount <= 1
-			? "（存档里还没有图片 —— 用「卡牌」页的「导入图片」）"
+			? "（存档里还没有图片 —— 点「导入图片…」）"
 			: "";
 	}
+
+	// ------------------------------------------------------------------ 导入图片
+
+	/// <summary>
+	/// 在这一页直接导一张图，并<b>立刻设为桌面背景</b>。
+	///
+	/// 这一条是 M5 留下的口子之一：导入入口原先只在「卡牌」页，于是这一页的提示
+	/// 写着"用「卡牌」页的「导入图片」" —— 用户只想换张桌面背景，得跑两趟。
+	/// 现在导入与"套用"在同一次点击里完成（导完还去下拉里找一遍文件名是多余动作）。
+	/// </summary>
+	private void OnImportPressed() => ImportImage(ApplyImportedImage);
+
+	/// <summary>导入成功之后把它选为背景，并让下拉与预览跟上。</summary>
+	internal void ApplyImportedImage(string fileName)
+	{
+		// 顺序要紧：先刷下拉（它会把选中项按 <c>Theme.BackgroundImage</c> 对齐，
+		// 而此刻还是旧值），再改主题、再刷一次让选中项落到新图上。
+		Mutate(theme => theme.BackgroundImage = fileName);
+		RefreshImageList();
+		Hud.Toast($"已导入 {fileName} 并设为桌面背景");
+		SetHint($"已导入 {fileName} 并设为桌面背景");
+	}
+
+	/// <summary>提示条就在背景那一行末尾（与卡牌页的位置不同，所以由本页提供）。</summary>
+	protected override void SetHint(string message) => _imageHint.Text = message;
 
 	// ------------------------------------------------------------------ 应用
 
@@ -206,4 +232,11 @@ public partial class BoardEditorPage : EditorPage
 		_gridSize.Value = size;
 		Mutate(theme => theme.GridSize = size);
 	}
+
+	/// <summary>自检用：宽高输入框里现在显示的数字（"读到新模型了没有"的判据）。</summary>
+	internal float BoardWidthForTest() =>
+		float.TryParse(_width.Text, out float w) ? w : -1f;
+
+	internal float BoardHeightForTest() =>
+		float.TryParse(_height.Text, out float h) ? h : -1f;
 }

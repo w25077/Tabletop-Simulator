@@ -39,6 +39,15 @@ public partial class Main : Node2D
 	/// <summary>撤销 / 重做（M4）。</summary>
 	public UndoSystem Undo { get; private set; } = null!;
 
+	/// <summary>
+	/// <b>编辑器自己的撤销栈</b>（用户拍板的方案 ②）。
+	///
+	/// 与 <see cref="Undo"/> 并存、<b>互不写入</b>：改定义的归这一条，
+	/// 拖拽 / 翻面 / 抽牌的归那一条。`Ctrl+Z` 按"面板开着没有"分流
+	/// （见 <c>ObjectManager</c> 里那段）。
+	/// </summary>
+	public EditorUndo EditorUndo { get; private set; } = null!;
+
 	/// <summary>操作日志面板（M4）。</summary>
 	public LogPanel Log { get; private set; } = null!;
 
@@ -150,6 +159,28 @@ public partial class Main : Node2D
 		// 编辑器不直接依赖 SavePanel 的类型 —— 两者都要存，但"谁来存"只该有一个答案。
 		_hud.SaveRequested = () => Save.SaveNow();
 
+		// 右键菜单「编辑这张（F1）」→ 打开编辑器并停在这一张上。
+		//
+		// 物件系统只发信号、不认识编辑器（它连 <c>EditorPanel</c> 这个类型都不提），
+		// 与上面 <c>Hud.SaveRequested</c> 同一个套路：<b>接线在 Main，两端互不认识</b>。
+		Objects.EditInstanceRequested += (kind, uid) => Editor.OpenForInstance(kind, uid);
+
+		// 编辑器撤销栈：节点在 Main.tscn 里，这里取出来装依赖。
+		//
+		// <b>它必须在这里 Bind</b>：快照要抓"当前的定义"，
+		// 而定义池在 <c>Main._Ready</c> 的前半段才装配好 —— 早一步抓就是一份空快照。
+		EditorUndo = GetNode<EditorUndo>("EditorUndo");
+		EditorUndo.Bind(Objects, Zones, _board.Theme, Undo);
+		Editor.BindEditorUndo(EditorUndo);
+
+		// Ctrl+Z 的路由要知道"面板开着没有" —— 物件系统握着 HUD，HUD 握着这条引用。
+		_hud.EditorPanelForShortcuts = Editor;
+
+		// 定义池被整体换掉（读档 / 切存档 / 新建存档）→ 编辑器各页重新读一遍。
+		// 接线在这里而不是让 SavePanel 直接调编辑器：两端互不认识，
+		// 与上面两条回调同一个套路。
+		Save.DefinitionsReloaded = () => Editor.RefreshAllPages();
+
 		// ---- 自动载入上次的存档（用户已拍板的决定 1）----
 		//
 		// 首次运行（没有 last_save.txt，或它指向的存档已被删）才用示例内容 ——
@@ -190,6 +221,18 @@ public partial class Main : Node2D
 
 		Save.SetCurrent(last);
 		HistoryLog.Clear();
+
+		// <b>读档把定义池整批换掉了 → 必须让编辑器各页重新读一遍。</b>
+		//
+		// 用户实测报的就是这一条：启动后第一次按 F1，卡池 / 卡组 / 区域里
+		// 显示的还是<b>示例内容</b>（火球术那一套），而不是刚读回来的存档内容。
+		//
+		// 根因是顺序：上面 <c>Editor.Initialize()</c> 会刷一次各页，
+		// 而它跑在这一行的<b>前面</b> —— 那次刷的是示例内容；
+		// 而读档之后原先<b>没有任何人</b>再叫各页刷一次
+		// （各页只在"切页签 / 开面板"时刷，那个假定在"模型被整体换掉"时不成立）。
+		Save.DefinitionsReloaded?.Invoke();
+
 		_hud.Toast($"已载入「{last}」（{Objects.ObjectCount} 件）");
 	}
 

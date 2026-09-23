@@ -129,6 +129,10 @@ internal static class DevZoneSim
 		await BackToBackPairFlip(host, cam, objects, zones, c, r);
 		await StackFlipAndShuffle(host, cam, objects, zones, deck, c, r);
 
+		// 用户实测报的："在区域内对卡组进行翻转，和桌面上操作的结果不一致"。
+		// 这一条把<b>四种语境</b>的 F 并排量出来，让"不一致"变成可读的数字。
+		await FlipConsistencyAcrossContexts(host, cam, objects, zones, hand, c, r);
+
 		// 收尾：所有操作做完之后，六条不变量必须仍然是绿的
 		Godot.Collections.Dictionary after = DevReport.ZoneProbe(main);
 		r["invariants_after"] = after;
@@ -138,8 +142,212 @@ internal static class DevZoneSim
 		return r;
 	}
 
-	// ------------------------------------------------------------------ 1. 洗牌
+	/// <summary>
+	/// <b>用户实测报的</b>："在区域内对卡组进行翻转有问题，和在桌面上操作的结果不一致。"
+	///
+	/// 这一条不做"我认为应该怎样"的断言，先把<b>四种语境下的同一操作</b>并排量出来：
+	/// <list type="number">
+	/// <item>桌面上的<b>自由堆</b>（≥2 张）</item>
+	/// <item><b>叠放区域</b>（牌库，<c>SortMode.Stack</c>）里的整副牌</item>
+	/// <item><b>非叠放区域</b>（手牌，<c>SortMode.Fan</c>）里的全部牌</item>
+	/// <item>桌面上<b>多选</b>的一把散牌</item>
+	/// </list>
+	///
+	/// 判据只有一条、而且对所有语境一样：<b>每一张牌的正反面都翻过来了</b>。
+	/// 次序则<b>按语境分</b>：只有"叠放"才有"次序"这回事（横排/扇形的位置由排版算，
+	/// 与成员次序无关）—— 所以"次序有没有反转"不进判据，只进报告供人看。
+	///
+	/// 为什么先量不断言：用户报的是"不一致"，而<b>哪一边是对的</b>需要先看数字。
+	/// 把四组读数摆在一起，"哪一种语境与其它三种不同"一眼可辨。
+	/// </summary>
+	private static async Task FlipConsistencyAcrossContexts(
+		Node host, BoardCamera cam, ObjectManager objects, ZoneManager zones, Zone hand,
+		Checks c, Godot.Collections.Dictionary r)
+	{
+		// ---- A. 桌面上多选的一把散牌 ----
+		(List<CardObject> loose, _) = LooseFaceUpCards(objects, cam);
 
+		if (loose.Count >= 3)
+		{
+			var looseThree = new List<TabletopObject> { loose[0], loose[1], loose[2] };
+
+			objects.SelectOnly(looseThree);
+
+			List<bool> before = new();
+			foreach (TabletopObject o in looseThree)
+				before.Add(o.IsFaceDown);
+
+			objects.FlipSelection();
+			await DevInputSim.Frame(host);
+
+			List<bool> after = new();
+			foreach (TabletopObject o in looseThree)
+				after.Add(o.IsFaceDown);
+
+			r["flip_table_selection_faces_before"] = ToBoolArray(before);
+			r["flip_table_selection_faces_after"] = ToBoolArray(after);
+			c.Put("flip_table_selection_toggles_every_card", FacesFlipped(before, after));
+
+			// 翻回来
+			objects.FlipSelection();
+			objects.ClearSelection();
+			await DevInputSim.Frame(host);
+		}
+		else
+		{
+			c.Put("flip_table_selection_toggles_every_card", false);
+			r["flip_table_selection_note"] = $"屏幕内散牌只有 {loose.Count} 张，凑不出 3 张";
+		}
+
+		// ---- B. 区域里的全部成员（叠放区域与非叠放区域各来一次）----
+		//
+		// <b>两个区域都主动备足牌。</b>
+		// 第一版只写了 <c>if (zone.Count &lt; 3) continue;</c>，于是手牌区不够 3 张时
+		// <b>整个非叠放语境一条读数都没有</b> —— 而"横排/扇形"恰恰是最可能出问题的那一种
+		// （它的位置由排版算，与成员次序无关）。探针缺了这一段，等于这一条没验。
+		await EnsureZoneHasCards(host, zones, objects, zones.Find(DemoContent.DeckZoneId)!, 4);
+		await EnsureZoneHasCards(host, zones, objects, hand, 4);
+
+		foreach (Zone zone in new[] { zones.Find(DemoContent.DeckZoneId)!, hand })
+		{
+			if (zone is null || zone.Count < 3)
+				continue;
+
+			string tag = zone.Definition.SortMode == ZoneSortMode.Stack ? "stack" : "nonstack";
+			List<string> orderBefore = Uids(zone);
+			List<bool> facesBefore = Faces(zone);
+
+			if (zone.Top is TabletopObject topCard)
+			{
+				await Hover(host, cam, topCard);
+				DevInputSim.PushKey(Key.F);
+				await DevInputSim.Frame(host);
+				await DevInputSim.Frame(host);
+			}
+
+			List<string> orderAfter = Uids(zone);
+			List<bool> facesAfter = Faces(zone);
+
+			r[$"flip_zone_{tag}_kind"] = zone.Definition.SortMode.ToString();
+			r[$"flip_zone_{tag}_count"] = zone.Count;
+			r[$"flip_zone_{tag}_order_reversed"] = Reversed(orderBefore, orderAfter);
+			r[$"flip_zone_{tag}_faces_before"] = ToBoolArray(facesBefore);
+			r[$"flip_zone_{tag}_faces_after"] = ToBoolArray(facesAfter);
+
+			c.Put($"flip_zone_{tag}_toggles_every_card", FacesFlipped(facesBefore, facesAfter));
+
+			// 翻回来（同一把 F）
+			if (zone.Top is TabletopObject topAgain)
+			{
+				await Hover(host, cam, topAgain);
+				DevInputSim.PushKey(Key.F);
+				await DevInputSim.Frame(host);
+				await DevInputSim.Frame(host);
+			}
+
+			c.Put($"flip_zone_{tag}_is_involutive",
+				SameOrder(Uids(zone), orderBefore) && FacesEqual(Faces(zone), facesBefore));
+
+			// ---- Shift+F：只翻最上面那一张（用户拍板）----
+			//
+			// 与上面那把 F 的对照就是这一组的全部意义：
+			// <b>同一个键 + Shift = 只动一张，次序不许变</b>。
+			if (zone.Top is TabletopObject shiftTop)
+			{
+				List<string> shiftOrderBefore = Uids(zone);
+				List<bool> shiftFacesBefore = Faces(zone);
+
+				await Hover(host, cam, shiftTop);
+				DevInputSim.PushKeyWithModifiers(Key.F, shift: true);
+				await DevInputSim.Frame(host);
+				await DevInputSim.Frame(host);
+
+				List<string> shiftOrderAfter = Uids(zone);
+				List<bool> shiftFacesAfter = Faces(zone);
+
+				int changed = 0;
+				for (int i = 0; i < shiftFacesBefore.Count && i < shiftFacesAfter.Count; i++)
+				{
+					if (shiftFacesBefore[i] != shiftFacesAfter[i])
+						changed++;
+				}
+
+				r[$"shift_flip_zone_{tag}_changed_count"] = changed;
+				r[$"shift_flip_zone_{tag}_order_kept"] = SameOrder(shiftOrderBefore, shiftOrderAfter);
+
+				c.Put($"shift_flip_zone_{tag}_only_top_changed", changed == 1);
+				c.Put($"shift_flip_zone_{tag}_keeps_order", SameOrder(shiftOrderBefore, shiftOrderAfter));
+
+				// 还原：再按一次（同一张又翻回来）
+				if (zone.Top is TabletopObject shiftTopAgain)
+				{
+					await Hover(host, cam, shiftTopAgain);
+					DevInputSim.PushKeyWithModifiers(Key.F, shift: true);
+					await DevInputSim.Frame(host);
+					await DevInputSim.Frame(host);
+				}
+
+				c.Put($"shift_flip_zone_{tag}_is_involutive",
+					SameOrder(Uids(zone), shiftOrderBefore) && FacesEqual(Faces(zone), shiftFacesBefore));
+			}
+		}
+	}
+
+	/// <summary>
+	/// 让一个区域至少有几张牌（不够就从别处搬）。
+	///
+	/// 搬的来源优先"另一个区域"，其次桌面上的散牌 —— 走
+	/// <see cref="ZoneManager.MoveInto"/> 正常路径，于是排版、成员次序、
+	/// 绘制次序都按产品的规矩走，探针不必自己维护那些簿记。
+	/// </summary>
+	private static async Task EnsureZoneHasCards(Node host, ZoneManager zones, ObjectManager objects, Zone zone, int need)
+	{
+		if (zone is null || zone.Count >= need)
+			return;
+
+		var donors = new List<TabletopObject>();
+
+		// 来源一：别的区域里的成员
+		foreach (Zone other in zones.AllZones)
+		{
+			if (other == zone)
+				continue;
+
+			foreach (TabletopObject m in other.Members)
+				donors.Add(m);
+		}
+
+		// 来源二：桌面上的散牌
+		foreach (TabletopObject o in objects.AllObjects)
+		{
+			if (o.Visible && o.ZoneId == "" && o.PileId == 0)
+				donors.Add(o);
+		}
+
+		foreach (TabletopObject donor in donors)
+		{
+			if (zone.Count >= need)
+				break;
+
+			if (!GodotObject.IsInstanceValid(donor))
+				continue;
+
+			zones.MoveInto(zone, new[] { donor });
+			await DevInputSim.Frame(host);
+		}
+	}
+
+	/// <summary>把一串 bool 装进报告用的 <c>Array</c>。</summary>
+	private static Godot.Collections.Array ToBoolArray(List<bool> values)
+	{
+		var array = new Godot.Collections.Array();
+		foreach (bool v in values)
+			array.Add(v);
+
+		return array;
+	}
+
+	// ------------------------------------------------------------------ 1. 洗牌
 	private static async Task ShuffleTwice(Node host, Zone deck, Checks c, Godot.Collections.Dictionary r)
 	{
 		List<string> before = Uids(deck);

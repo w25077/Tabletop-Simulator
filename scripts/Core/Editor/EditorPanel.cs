@@ -142,6 +142,25 @@ public partial class EditorPanel : Control
 	internal bool CollapsedForDraw { get; private set; }
 
 	/// <summary>
+	/// 自检用：把面板的可见性钉住，别让"退出画区域模式"之类把它复原
+	/// （<c>RestoreFromDrawMode</c> 见到 <see cref="IsOpen"/> 就会把 <c>Visible</c> 设回来）。
+	///
+	/// 存在的理由是实测出来的一条：<c>editor_simulation</c> 收尾时面板还开着，
+	/// 紧跟其后的存档探针于是<b>把面板拍进了缩略图</b>（画面中间一整片是面板底色），
+	/// 而"缩略图里是不是桌子"这条断言读起来像产品坏了。
+	/// 有了它，探针就能明确地摆出"面板开着"这一种局面。
+	/// </summary>
+	internal bool AlwaysVisible { get; set; }
+
+	/// <summary>自检用：摆成"面板开着 / 关着"的样子，并返回它是否真的落了地。</summary>
+	internal bool SetVisibleForTest(bool visible)
+	{
+		AlwaysVisible = visible;
+		Visible = visible;
+		return Visible == visible;
+	}
+
+	/// <summary>
 	/// 进入"画区域"模式时把面板收起来（用户实测反馈第 4 条：
 	/// "在画布上拖矩形点击后没有关闭当前 F1 界面，无法紧跟着划区域"）。
 	///
@@ -157,7 +176,8 @@ public partial class EditorPanel : Control
 			return;
 
 		CollapsedForDraw = true;
-		Visible = false;
+		if (!AlwaysVisible)
+			Visible = false;
 		CollapseTrace += $"[f{Engine.GetProcessFrames()} collapse open={IsOpen} vis={Visible}] ";
 	}
 
@@ -184,7 +204,10 @@ public partial class EditorPanel : Control
 		//
 		// 这里判的必须是 <see cref="IsOpen"/>（逻辑），不能是 <c>Visible</c>：
 		// 收起面板正是把 Visible 设成 false 的那一步。
-		if (IsOpen)
+		//
+		// 自检钉住可见性时（<see cref="AlwaysVisible"/>）跳过这一步：
+		// 探针要摆的是"面板开着 / 关着"这一种局面，不该被收模式顺手改掉。
+		if (IsOpen && !AlwaysVisible)
 			Visible = true;
 
 		CollapseTrace += $"[f{Engine.GetProcessFrames()} restore open={IsOpen} vis={Visible}] ";
@@ -273,7 +296,7 @@ public partial class EditorPanel : Control
 		// <c>RefreshStatus</c> 会抛 <c>NullReferenceException</c>。
 		// 第一次跑就这么炸了 7 条，而面板看起来完全正常、<b>自检也全绿</b>。
 		foreach (EditorPage page in Pages())
-			page.OnShown();
+			OnShownSafely(page);
 
 		RefreshStatus();
 
@@ -419,12 +442,94 @@ public partial class EditorPanel : Control
 		if (!Visible)
 			return;
 
+		// ---- 撤销 / 重做（M5 遗留口子之四）----
+		//
+		// <b>这一段必须排在下面"吃掉其余按键"之前，而且必须在这里、不在物件系统里。</b>
+		// 实测逼出来的：把路由写在 <c>ObjectManager._UnhandledKeyInput</c> 时，
+		// <c>Ctrl+Z</c> 压根到不了那里 —— 它自带的只读计数器
+		// （<c>KeyEventsSeen</c>）在按下前后都是 19，一动不动。
+		// 原因是派发次序：面板开着时是**这一层**先看到按键，
+		// 而下面那行 <c>SetInputAsHandled</c> 把一切都吃掉了。
+		//
+		// 分工因此是这样：
+		// <list type="bullet">
+		// <item><b>面板开着</b> → 这里处理：<c>Ctrl+Z</c> 走编辑器栈；
+		//   <c>Ctrl+Alt+Z</c> 显式转发给主栈（想撤刚才拖的那一下，不必先关面板）。</item>
+		// <item><b>面板关着</b> → 物件系统那条老路，走主栈。</item>
+		// </list>
+		if (HandleHistoryKeys(key, out bool forwardToTable))
+		{
+			GetViewport().SetInputAsHandled();
+			return;
+		}
+
+		// 显式转发给主栈（<c>Ctrl+Alt+Z</c>）：<b>这里必须 return，不能往下走到"吃掉"那行</b>
+		// —— 否则转发不出去，而症状与"这个键没绑上"一模一样。
+		if (forwardToTable)
+			return;
+
 		// 面板开着时吃掉其余按键：否则在名称输入框里按 d 会抽牌、f 会翻面。
 		//
 		// 走 _UnhandledKeyInput 的天然好处：**焦点在 LineEdit 里时这个函数根本不会被调用**
 		// （控件先吃掉打字键），所以"输入框里按 Ctrl+Z 是撤销文字"这件事自动成立，
 		// 不需要自己判断焦点。
 		GetViewport().SetInputAsHandled();
+	}
+
+	/// <summary>
+	/// 面板开着时的撤销 / 重做。返回值 = "这个键我处理掉了"。
+	///
+	/// 两条规则：
+	/// <list type="number">
+	/// <item><b><c>Ctrl+Z</c> / <c>Ctrl+Shift+Z</c> / <c>Ctrl+Y</c> 走编辑器栈</b>
+	///   —— 面板开着时用户改的是定义，他要退的也是定义。</item>
+	/// <item><b><c>Ctrl+Alt+Z</c> 显式转发给主栈</b>（<paramref name="forwardToTable"/> 为真）
+	///   —— 面板开着也能退桌面动作。没有它的话，"刚拖完一张牌、想退回去"
+	///   就得先关面板、按 Z、再开面板。</item>
+	/// </list>
+	///
+	/// 编辑器栈空时<b>不吞键</b>：返回 <c>false</c> 且不转发，让按键继续往下走
+	/// （于是面板开着、编辑器历史空着时，<c>Ctrl+Z</c> 仍然能退桌面动作 ——
+	/// 而那正是这时候用户唯一想要的结果）。
+	/// </summary>
+	private bool HandleHistoryKeys(InputEventKey key, out bool forwardToTable)
+	{
+		forwardToTable = false;
+
+		bool undo = key.IsActionPressed("tt_undo");
+		bool redo = key.IsActionPressed("tt_redo");
+
+		// <c>tt_undo_table</c>（Ctrl+Alt+Z）也是 <c>tt_undo</c> 的超集，
+		// 所以这一条要先判，否则它会被当成"编辑器撤销"接走。
+		if (key.IsActionPressed("tt_undo_table"))
+		{
+			forwardToTable = true;
+			return false;
+		}
+
+		if (!undo && !redo)
+			return false;
+
+		if (_editorUndo is null)
+			return false;
+
+		bool can = redo ? _editorUndo.CanRedo : _editorUndo.CanUndo;
+		if (!can)
+		{
+			// 编辑器没有可退的了 → 不吞这个键，让它去退桌面动作。
+			return false;
+		}
+
+		string label = redo ? _editorUndo.RedoLabel : _editorUndo.UndoLabel;
+		bool did = redo ? _editorUndo.Redo() : _editorUndo.Undo();
+
+		if (did)
+		{
+			OnDefinitionUndone();
+			_hud.Toast($"编辑器：{label}");
+		}
+
+		return true;
 	}
 
 	/// <summary>
@@ -483,7 +588,7 @@ public partial class EditorPanel : Control
 		Visible = true;
 		_objects.ClearSelection();
 		RefreshStatus();
-		CurrentPage()?.OnShown();
+		OnShownSafely(CurrentPage());
 		_hud.SyncEditorButton(true);
 		SyncResizer();
 	}
@@ -528,8 +633,168 @@ public partial class EditorPanel : Control
 			return;
 
 		_tabs.CurrentTab = index;
-		CurrentPage()?.OnShown();
+		OnShownSafely(CurrentPage());
 		SyncResizer();
+	}
+
+	/// <summary>
+	/// 打开编辑器并停在"桌上这一个物件"上（右键菜单「编辑这张」的落点）。
+	///
+	/// 它做三件事，缺一不可：
+	/// <list type="number">
+	/// <item>开面板（用户可能压根没开过编辑器）；</item>
+	/// <item>切到对应那一页（卡 / 指示物）；</item>
+	/// <item>把<b>实例</b>交给那一页 —— 于是字段表改的是"这一张"，
+	///   而不是整副共用同一份定义的牌。</item>
+	/// </list>
+	///
+	/// 第三步是这个入口存在的全部理由：实例级覆盖的数据层从 M2 就有
+	/// （<c>CardObject.SetFieldOverride</c>，也早就进了快照与撤销），
+	/// 但编辑器一直没有暴露它 —— 用户在桌上想调"这一张牌的费用"，
+	/// 只能改定义、于是牌库里另外三张同名卡一起变了。
+	/// </summary>
+	public void OpenForInstance(string kind, string uid)	{
+		if (!IsOpen)
+			Open();
+
+		if (kind == "token")
+		{
+			SwitchTab(TabTokens);
+			_tokenPage.EditInstance(uid);
+		}
+		else
+		{
+			SwitchTab(TabCards);
+			_cardPage.EditInstance(uid);
+		}
+	}
+
+	/// <summary>自检用：按 uid 找桌上那个物件，再走一遍「编辑这张」的完整路径。</summary>
+	internal bool OpenForInstanceUidForTest(string uid)
+	{
+		foreach (TabletopObject obj in _objects.AllObjects)
+		{
+			if (obj.Uid != uid)
+				continue;
+
+			OpenForInstance(obj is TokenObject ? "token" : "card", uid);
+			return true;
+		}
+
+		return false;
+	}
+
+	/// <summary>
+	/// 把编辑器撤销栈接进来（由 <c>Main</c> 在装配完之后调一次）。
+	///
+	/// <b>不放在构造函数里</b>：那条栈的快照依赖"定义池已经装好"，
+	/// 而定义池是 <c>Main._Ready</c> 前半段才装配的。
+	/// </summary>
+	internal void BindEditorUndo(EditorUndo editorUndo) => _editorUndo = editorUndo;
+
+	private EditorUndo? _editorUndo;
+
+	/// <summary>自检用：编辑器撤销栈（可能为 null —— 没接线时）。</summary>
+	internal EditorUndo? EditorUndoForTest => _editorUndo;
+
+	/// <summary>
+	/// 记一次编辑器改动。
+	///
+	/// <b>它是"编辑器改了东西"的唯一收口</b>：五个分页的每一个改动点都已经在调
+	/// <see cref="NotifyChanged"/>（那是"存档脏了"的信号），所以记录挂在这里
+	/// 就等于<b>自动覆盖全部改动点</b>，不必去 30 个调用点各加一行 ——
+	/// 而"各加一行"正是最容易漏一处的那种写法，漏掉的那处表现是
+	/// "改那个东西之后 Ctrl+Z 退不回去"，其余地方都正常。
+	///
+	/// <b>没变化就不进历史</b>由 <see cref="EditorUndo.Record"/> 自己判
+	/// （它比的是整份定义快照），所以"NotifyChanged 被调了但什么都没改"
+	/// 这类情况不会污染历史。
+	/// </summary>
+	public void NotifyChanged(string label = "", string mergeKey = "")
+	{
+		NotifyStatusOnly();
+		NotifyChangedCalls++;
+
+		// 写回快照期间不许记录（否则撤销自己产出新历史）。
+		if (_editorUndo is null || _editorUndo.IsApplying)
+			return;
+
+		// <b>"正在刷界面"期间也不许记录。</b>
+		//
+		// 这条是实测逼出来的：<c>OnShown</c> / <c>RefreshDetail</c> 会把定义里的值
+		// 重新写进表单控件，而<b>写进控件本身会触发回调</b>
+		// （<c>LineEdit.TextChanged</c> → 页里的 <c>Mutate</c> → 这里）。
+		// 于是"打开一页"或"选中另一张卡"都会记一条历史 —— 而那是刷新，不是用户的改动。
+		//
+		// 它的后果不只是多几条：那些噪声记录会<b>把用户真正的改动合并进自己</b>
+		// （连击合并按 <c>mergeKey</c> 与时间窗判定），于是"改了一个字段"之后
+		// 历史条数纹丝不动 —— 自检里那条 <c>editor_undo_records_override</c>
+		// 就是这么红的（读到 <c>attempts=33</c> 而 <c>Count</c> 只涨了 0）。
+		if (_refreshing)
+		{
+			NotifyChangedSuppressedRefreshing++;
+			return;
+		}
+
+		_editorUndo.Record(label.Length > 0 ? label : "编辑器修改", mergeKey);
+	}
+
+	/// <summary>只读计数器：<see cref="NotifyChanged(string)"/> 被调了几次、其中几次因刷新被挡。</summary>
+	internal int NotifyChangedCalls { get; private set; }
+
+	internal int NotifyChangedSuppressedRefreshing { get; private set; }
+
+	/// <summary>正在刷界面（<see cref="OnShownSafely"/> 的执行窗口）。</summary>
+	private bool _refreshing;
+
+	/// <summary>
+	/// 安全地让一页刷新自己：<b>这期间发生的一切都不进历史</b>。
+	///
+	/// 切换页签 / 打开面板 / 撤销写回之后都走它 —— 那些时刻的共同点是
+	/// "界面在读模型"，而不是"用户在改模型"。
+	/// </summary>
+	public void OnShownSafely(EditorPage? page)
+	{
+		_refreshing = true;
+		try
+		{
+			page?.OnShown();
+		}
+		finally
+		{
+			_refreshing = false;
+
+			// <b>刷完之后把历史基线对齐到现场。</b>
+			//
+			// 回填表单可能触发一个"提交"回调（最典型的是输入框失焦 → <c>FocusExited</c>），
+			// 而 <see cref="_refreshing"/> 只挡住了"记录"，挡不住那个回调<b>改模型</b>。
+			// 不对齐的话，下一次真正改动的 <c>before</c> 会指向这一串刷新之前的状态 ——
+			// 用户按一次 Ctrl+Z 退回去的是一份更老的快照，
+			// 而报告里只看到"历史条数没涨"。
+			_editorUndo?.SyncBaseline();
+		}
+	}
+
+	/// <summary>
+	/// 编辑器撤销 / 重做<b>写回之后</b>调一次：让界面跟上被改回去的定义。
+	///
+	/// <b>为什么不走 <see cref="NotifyChanged(string)"/>：</b>那不是一次新的改动
+	/// （走它会在历史里多出一条净效果为零的记录，用户按 Ctrl+Z 会连按几次空步）。
+	/// 它要的只是"把现在这份定义重新显示出来"。
+	///
+	/// 三件事都要做：
+	/// <list type="number">
+	/// <item>当前页 <c>OnShown</c>（列表 / 表单 / 预览）；</item>
+	/// <item>物件系统把新定义推给场上的实例 —— 不做的话桌面上那些卡还在画旧卡面
+	///   （"撤销了但桌子没变"）；</item>
+	/// <item>顶栏状态（脏标记）。</item>
+	/// </list>
+	/// </summary>
+	internal void OnDefinitionUndone()
+	{
+		OnShownSafely(CurrentPage());
+		_objects.NotifyDefinitionsReloaded();
+		NotifyStatusOnly();
 	}
 
 	/// <summary>
@@ -552,7 +817,19 @@ public partial class EditorPanel : Control
 	/// 代价是"删完卡切到卡组页，卡组还显示着那一行"这类跨页不一致需要各页自己管 ——
 	/// 而那个代价比"打字要一直点鼠标"小得多，且每页的刷新点都在它自己的动作里，看得见。
 	/// </summary>
-	internal void NotifyChanged()
+	/// <summary>
+	/// 只重算顶栏与底栏（<b>不记录历史</b>）。
+	///
+	/// 与 <see cref="NotifyChanged(string)"/> 分开是为了两个诚实的用途：
+	/// <list type="bullet">
+	/// <item>撤销 / 重做<b>写回</b>之后要刷新状态，但那不是"一次新的改动"；</item>
+	/// <item>"按实例编辑"的目标变了、字段标记变了这类<b>纯界面</b>变化，
+	///   状态要更新，但定义一个字都没动。</item>
+	/// </list>
+	/// 合成一个方法的话，第二类会被记成一条净效果为零的历史 ——
+	/// 用户按 Ctrl+Z 时会连按几次空步。
+	/// </summary>
+	public void NotifyStatusOnly()
 	{
 		// 建界面中途控件会触发自己初值的回调（勾选框 → 页里的 Mutate →
 		// 这里），那时面板还没建完。挡掉而不是让它炸（见 _built 的说明）。
@@ -576,6 +853,29 @@ public partial class EditorPanel : Control
 	{
 		_cardPage, _tokenPage, _deckPage, _boardPage, _zonePage,
 	};
+
+	/// <summary>
+	/// 让<b>五个分页全部</b>重新读一遍现在的模型。
+	///
+	/// <b>什么时候必须调它：定义池被整体换掉之后。</b>读档、切存档、新建存档
+	/// 都会把 <c>CardDefinitions</c> / <c>TokenDefinitions</c> / <c>Decks</c>
+	/// 换成另一批对象，而各页里的列表与表单<b>是上一次刷新的结果</b> ——
+	/// 它们不知道"模型换了"这件事。
+	///
+	/// 症状（用户实测报的）：<b>启动后第一次按 F1，卡池 / 卡组 / 区域显示的还是
+	/// 示例内容（火球术那一套），而不是刚读回来的存档内容</b>。
+	/// 根因是启动顺序：<c>Main</c> 里 <c>Editor.Initialize()</c>（它会刷一次各页）
+	/// 跑在 <c>TryLoadLastSave()</c> <b>之前</b> —— 那一次刷的是示例内容，
+	/// 而读档之后<b>没有任何人</b>再叫各页刷一次。
+	///
+	/// 只在<b>切页签 / 开面板</b>时才刷（<c>OnShown</c>）是原设计，
+	/// 它假定"没打开过的页不需要是新的"—— 那个假定在"模型被整体换掉"时不成立。
+	/// </summary>
+	public void RefreshAllPages()
+	{
+		foreach (EditorPage page in Pages())
+			OnShownSafely(page);
+	}
 
 	private EditorPage[] Pages() => new EditorPage[]	{
 		_cardPage, _tokenPage, _deckPage, _boardPage, _zonePage,

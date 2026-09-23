@@ -18,6 +18,8 @@
 [ext_resource type="PackedScene" uid="uid://cqlgn8daa2ee3" path="res://scenes/editor/DeckEditorPage.tscn" id="14_page_deck"]
 [ext_resource type="PackedScene" uid="uid://djgu156vlftu7" path="res://scenes/editor/ZoneEditorPage.tscn" id="15_page_zone"]
 [ext_resource type="Script" uid="uid://bbev1xxgi6k1d" path="res://scripts/Core/LogPanel.cs" id="17_bb450"]
+[ext_resource type="Script" uid="uid://detx7xuop64lf" path="res://scripts/Core/ThumbnailView.cs" id="18_nfivy"]
+[ext_resource type="Script" uid="uid://d3sjpnqj4gdwb" path="res://scripts/Core/Editor/EditorUndo.cs" id="20_1nqs0"]
 
 [node name="Main" type="Node2D" unique_id=1146469549]
 script = ExtResource("1_vcsgt")
@@ -58,9 +60,12 @@ grow_vertical = 2
 mouse_filter = 2
 
 [node name="Layout" type="VBoxContainer" parent="HUD/HudRoot" unique_id=2041031198]
-layout_mode = 0
+layout_mode = 1
+anchors_preset = 15
 anchor_right = 1.0
 anchor_bottom = 1.0
+grow_horizontal = 2
+grow_vertical = 2
 mouse_filter = 2
 theme_override_constants/separation = 6
 
@@ -131,7 +136,7 @@ layout_mode = 2
 
 [node name="HintLabel" type="Label" parent="HUD/HudRoot/Layout/HintBar" unique_id=1746742145]
 layout_mode = 2
-text = "滚轮 缩放　·　中键/右键/空格+左键 平移　·　左键拖 移物 / 空白拖 框选　·　拖到区域上方松手 归入区域　·　双击牌库或 D 抽牌　·　R 洗牌　·　Shift+拖 抽单张　·　F 翻面　·　[ ] 旋转 15°　·　Alt+滚轮 微旋　·　G 网格吸附　·　Ctrl+D 复制　·　Del 删除　·　Home 适配桌面"
+text = "滚轮 缩放　·　中键 平移　·　左键拖 移物 / 空白拖 框选　·　拖到区域 归入区域　·　双击牌库或 D 抽牌　·　R 洗牌　·　Shift+拖 抽单张　·　F 整组翻过来 / Shift+F 只翻最上一张　·　[ ] 旋转　·　Alt+滚轮 微旋　·　G 网格吸附　·　Ctrl+D 复制　·　Del 删除"
 horizontal_alignment = 1
 
 [node name="SaveMenu" type="PopupMenu" parent="HUD/HudRoot" unique_id=-164956291]
@@ -296,5 +301,18 @@ theme_override_constants/separation = 2
 layout_mode = 2
 text = "复制全部"
 
+[node name="ThumbnailView" type="Control" parent="HUD/HudRoot" unique_id=1674491612]
+visible = false
+anchors_preset = 0
+offset_left = 12.0
+offset_top = 92.0
+offset_right = 332.0
+offset_bottom = 272.0
+mouse_filter = 2
+script = ExtResource("18_nfivy")
+
 [node name="DevCapture" type="Node" parent="." unique_id=118026493]
 script = ExtResource("6_c01mt")
+
+[node name="EditorUndo" type="Node" parent="." unique_id=75827884]
+script = ExtResource("20_1nqs0")

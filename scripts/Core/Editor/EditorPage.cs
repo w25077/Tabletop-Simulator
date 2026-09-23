@@ -132,4 +132,141 @@ public abstract partial class EditorPage : Control
 		if (control.ButtonPressed != pressed)
 			control.ButtonPressed = pressed;
 	}
+
+	// ------------------------------------------------------------------ 导入图片
+
+	/// <summary>
+	/// 弹系统文件选择框，把一张图拷进当前存档的 <c>images/</c>，然后交给
+	/// <paramref name="onImported"/> <b>立刻套用到本页正在改的那个槽位</b>。
+	///
+	/// <b>为什么收到基类里：</b>原来这条路只在「卡牌」页有，于是「桌面」页的提示
+	/// 干脆写着"用「卡牌」页的「导入图片」"—— 用户只想换一张桌面背景，
+	/// 得先跑去另一页导图、再跑回来在下拉里找那个文件名。
+	/// 「指示物」页同样只能从已有图里挑。<b>三页共用一份逻辑</b>之后，
+	/// 每页各自"导完自动套用到自己那个槽位"（底图 / 背景 / 中心图），
+	/// 而 <see cref="ImageImport.Copy"/> 的拷贝语义（重名不覆盖、同图复用）只有一处实现。
+	///
+	/// <b>对话框用完必须收。</b>它是 <c>Window</c>，留着会积攒，
+	/// 而 <c>PopupMenu</c> 那一类"<c>Window</c> 抢走后续合成鼠标事件"的坑项目里已经踩过
+	/// （M3 两个菜单）。所以每次弹之前先 <see cref="CloseImportDialogs"/>。
+	/// </summary>
+	/// <param name="onImported">参数是存档内的文件名（要写进定义的就是它）。</param>
+	internal void ImportImage(System.Action<string> onImported)
+	{
+		CloseImportDialogs();
+
+		FileDialog dialog = new()
+		{
+			FileMode = FileDialog.FileModeEnum.OpenFile,
+			Access = FileDialog.AccessEnum.Filesystem,
+			Title = "选一张图片（会复制进当前存档的 images/）",
+			UseNativeDialog = true,
+		};
+
+		dialog.AddFilter("*.png,*.jpg,*.jpeg,*.webp,*.bmp", "图片");
+		dialog.FileSelected += path => OnImportFileSelected(path, onImported);
+
+		AddChild(dialog);
+		dialog.PopupCentered(new Vector2I(900, 600));
+	}
+
+	/// <summary>
+	/// 选完文件之后的处置：拷贝 → 成功就套用，失败就报错。
+	///
+	/// <b>它不碰界面</b>（除了吐司与提示条）—— 刷新由各页在自己的回调里做，
+	/// 因为"要不要重建下拉、要不要重建列表"各页不同
+	/// （M5 那轮定的规矩：谁改了结构谁自己刷）。
+	/// 自检也直接调它：走的是"用户选完文件"之后的同一段代码，
+	/// 而不是另写一份"给测试用"的替身。
+	/// </summary>
+	internal void OnImportFileSelected(string sourcePath, System.Action<string> onImported)
+	{
+		string fileName = ImageImport.Copy(AppPaths.CurrentSave, sourcePath);
+		if (fileName.Length == 0)
+		{
+			Hud.Toast($"导入失败：{ImageImport.LastError}");
+			SetHint($"导入失败：{ImageImport.LastError}");
+			return;
+		}
+
+		onImported(fileName);
+	}
+
+	/// <summary>
+	/// 自检用：把本页里所有控件的焦点摘掉。
+	///
+	/// 为什么需要它：<b>有焦点的控件会先把按键吃掉</b>，而 <c>LineEdit</c> 还自带文本撤销 ——
+	/// 于是"在字段表里按 Ctrl+Z"退的是文本框里的字，而不是编辑器改过的定义。
+	/// 探针要验的是后者，就得先把焦点摘干净（那也正是用户点一下空白处会发生的事）。
+	/// </summary>
+	internal void ReleaseFocusForTest()
+	{
+		Viewport? viewport = GetViewport();
+		viewport?.GuiReleaseFocus();
+	}
+
+	/// <summary>本页当前有没有控件握着键盘焦点（诊断用：读出来，别猜）。</summary>
+	internal bool HasFocusedControlForTest() => GetViewport()?.GuiGetFocusOwner() is not null;
+
+	/// <summary>本页的提示条（各页在场景里都有，位置不同，所以由各页提供）。</summary>
+	protected virtual void SetHint(string message)
+	{
+	}
+
+	/// <summary>
+	/// 收掉本页弹过的导入对话框。它是 <c>Window</c>，留着会积攒，
+	/// 而自检更在意另一点：<b>残留的 <c>Window</c> 会抢走后续合成鼠标事件</b>。
+	/// </summary>
+	internal void CloseImportDialogs()
+	{
+		foreach (Node child in GetChildren())
+		{
+			if (child is FileDialog dialog)
+			{
+				dialog.Hide();
+				RemoveChild(dialog);
+				dialog.QueueFree();
+			}
+		}
+	}
+
+	/// <summary>本页当前有几个导入对话框还挂着（自检核对"探针没留下东西"）。</summary>
+	internal int ImportDialogCountForTest()
+	{
+		int n = 0;
+		foreach (Node child in GetChildren())
+		{
+			if (child is FileDialog)
+				n++;
+		}
+
+		return n;
+	}
+
+	/// <summary>
+	/// 自检用：像用户那样<b>按下</b>本页的「导入图片…」按钮，并按"弹出了对话框"判定成败。
+	///
+	/// <b>存在的理由是一条实测出来的假绿：</b>第一版断言只读了按钮的文字与尺寸，
+	/// 然后直接调 <c>ApplyImportedImage</c> —— 于是"按钮的 <c>Pressed</c> 接没接线"
+	/// 这件事<b>根本没有裁判</b>：把那行接线注释掉，整个 <c>editor_simulation</c> 照样全绿。
+	///
+	/// 判据不是"信号发出去了"（<c>EmitSignal</c> 永远成功，发出去没人听也算成功），
+	/// 而是<b>按下去真的多了一个对话框</b> —— 那才是"接线在"的证据。
+	///
+	/// 发信号而不是调 <c>OnImportPressed</c>：前者走的是"按钮被按下"那条真实路径
+	/// （含接线本身），后者只是调用一个恰好叫这个名字的方法。
+	/// </summary>
+	internal bool PressImportButtonForTest()
+	{
+		Button? button = FindChild("ImportButton", true, false) as Button;
+		if (button is null)
+			return false;
+
+		int before = ImportDialogCountForTest();
+		button.EmitSignal(BaseButton.SignalName.Pressed);
+		bool appeared = ImportDialogCountForTest() > before;
+
+		CloseImportDialogs();
+		return appeared;
+	}
 }

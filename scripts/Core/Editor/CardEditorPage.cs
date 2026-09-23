@@ -1,4 +1,5 @@
 using Godot;
+using TabletopSimulator.Core.Objects;
 using TabletopSimulator.Data;
 
 namespace TabletopSimulator.Core;
@@ -72,10 +73,54 @@ public partial class CardEditorPage : EditorPage
 		internal required ColorPickerButton Color { get; init; }
 		internal required CheckBox ShowLabel { get; init; }
 		internal required Button Remove { get; init; }
+
+		/// <summary>「回定义」：撤掉这一行上的实例覆盖（只在按实例编辑时有意义）。</summary>
+		internal required Button Revert { get; init; }
 	}
 
 	/// <summary>当前选中的卡牌 id（空 = 没选）。</summary>
 	public string SelectedId { get; private set; } = "";
+
+	// ---- 实例级覆盖（M5 遗留口子之三）----
+
+	/// <summary>
+	/// 正在被"按实例"编辑的那一张桌上的卡（空 = 改定义）。
+	///
+	/// <b>为什么要有这个模式：</b>验平衡性时最常见的一句话是"这张牌的费用改成 3 试试"，
+	/// 而编辑器原来只有"改定义"这一条路 —— 改完牌库里另外三张同名卡一起变。
+	/// 实例级覆盖的数据层从 M2 就有（<c>CardObject.SetFieldOverride</c>，
+	/// 也早就进了快照与撤销），缺的只是把它暴露到界面上。
+	///
+	/// <b>改定义与改实例刻意分成两种模式、不做成两个按钮：</b>
+	/// 字段表就一张，用户得清楚"我现在改的是一次改动还是一份模板"。
+	/// 目标条把这件事写在屏幕上。
+	/// </summary>
+	private string _editInstanceUid = "";
+
+	private PanelContainer _targetBar = null!;
+	private Label _targetLabel = null!;
+	private Label _targetHint = null!;
+
+	/// <summary>目标条上那个「改回定义（×）」。</summary>
+	internal Button TargetClearButton => GetNode<Button>("Row/Right/TargetBar/Row/TargetClear");
+
+	/// <summary>自检用：目标条可见吗。</summary>
+	internal bool TargetBarVisible => _targetBar is not null && _targetBar.Visible;
+
+	/// <summary>自检用：正在按实例编辑的那一张（空 = 改定义）。</summary>
+	internal string EditInstanceUid => _editInstanceUid;
+
+	/// <summary>自检用：目标条上写着什么（标题那行）。</summary>
+	internal string TargetText => _targetLabel?.Text ?? "";
+
+	/// <summary>
+	/// 自检用：目标条的<b>提示那行</b>（"还没改过 / 这一张有 N 处覆盖"）。
+	///
+	/// 它单独暴露出来是因为自检在这里读错过一次：断言 <c>Contains("还没改过")</c>
+	/// 读的是标题那行，而那行永远只说"第几张、哪张卡" —— 于是
+	/// "清掉覆盖之后提示要跟着变"这条断言红着，而<b>产品是对的</b>。
+	/// </summary>
+	internal string TargetHintText => _targetHint?.Text ?? "";
 
 	/// <summary>列表里当前列出的卡牌 id，按显示次序。<b>自检靠它核对"列表与卡池一致"。</b></summary>
 	internal System.Collections.Generic.List<string> ListedIds { get; } = new();
@@ -97,6 +142,10 @@ public partial class CardEditorPage : EditorPage
 	internal override void Initialize()
 	{
 		_list = GetNode<VBoxContainer>("Row/Left/ListScroll/CardList");
+		_targetBar = GetNode<PanelContainer>("Row/Right/TargetBar");
+		_targetLabel = GetNode<Label>("Row/Right/TargetBar/Row/TargetLabel");
+		_targetHint = GetNode<Label>("Row/Right/TargetBar/Row/TargetHint");
+		TargetClearButton.Pressed += ClearInstanceEdit;
 		_newButton = GetNode<Button>("Row/Left/CardActions/NewCardButton");
 		_duplicateButton = GetNode<Button>("Row/Left/CardActions/DuplicateCardButton");
 		_deleteButton = GetNode<Button>("Row/Left/CardActions/DeleteCardButton");
@@ -138,38 +187,48 @@ public partial class CardEditorPage : EditorPage
 		{
 			string trimmed = t.Trim();
 			if (trimmed.Length > 0)
-				Mutate(d => d.DisplayName = trimmed);
+				Mutate(d => d.DisplayName = trimmed, Merge("name"));
 		});
 
 		// 两个图片下拉：回填期间要早退（见 _suppressCallbacks 的说明）。
-		SubscribeImage(_faceImage, file => Mutate(d => d.FaceImage = file));
-		SubscribeImage(_backImage, file => Mutate(d => d.BackImage = file));
+		SubscribeImage(_faceImage, file => Mutate(d => d.FaceImage = file, Merge("face")));
+		SubscribeImage(_backImage, file => Mutate(d => d.BackImage = file, Merge("back")));
 
 		GetNode<Button>($"{Form}/ImportRow/ImportButton").Pressed += OpenImportDialog;
-		_faceTint.ColorChanged += c => Mutate(d => d.FaceTint = c);
-		_backTint.ColorChanged += c => Mutate(d => d.BackTint = c);
-		_borderColor.ColorChanged += c => Mutate(d => d.BorderColor = c);
+		_faceTint.ColorChanged += c => Mutate(d => d.FaceTint = c, Merge("facetint"));
+		_backTint.ColorChanged += c => Mutate(d => d.BackTint = c, Merge("backtint"));
+		_borderColor.ColorChanged += c => Mutate(d => d.BorderColor = c, Merge("bordercolor"));
 
 		GetNode<Button>($"{Form}/FieldsHeader/AddFieldButton").Pressed += OnAddFieldPressed;
 
-		SubscribeSpin(_titleFontSize, v => Mutate(d => d.Template.TitleFontSize = (int)v));
-		SubscribeSpin(_fieldFontSize, v => Mutate(d => d.Template.FieldFontSize = (int)v));
-		SubscribeSpin(_descriptionFontSize, v => Mutate(d => d.Template.DescriptionFontSize = (int)v));
-		SubscribeSpin(_padding, v => Mutate(d => d.Template.Padding = (float)v));
-		SubscribeSpin(_cornerRadius, v => Mutate(d => d.Template.CornerRadius = (float)v));
-		SubscribeSpin(_templateBorder, v => Mutate(d => d.Template.BorderWidth = (float)v));
-		SubscribeSpin(_shadowSize, v => Mutate(d => d.Template.ShadowSize = (int)v));
+		SubscribeSpin(_titleFontSize, v => Mutate(d => d.Template.TitleFontSize = (int)v, Merge("template")));
+		SubscribeSpin(_fieldFontSize, v => Mutate(d => d.Template.FieldFontSize = (int)v, Merge("template")));
+		SubscribeSpin(_descriptionFontSize, v => Mutate(d => d.Template.DescriptionFontSize = (int)v, Merge("template")));
+		SubscribeSpin(_padding, v => Mutate(d => d.Template.Padding = (float)v, Merge("template")));
+		SubscribeSpin(_cornerRadius, v => Mutate(d => d.Template.CornerRadius = (float)v, Merge("template")));
+		SubscribeSpin(_templateBorder, v => Mutate(d => d.Template.BorderWidth = (float)v, Merge("template")));
+		SubscribeSpin(_shadowSize, v => Mutate(d => d.Template.ShadowSize = (int)v, Merge("template")));
 		SubscribeSpin(_shadowX, v =>
-			Mutate(d => d.Template.ShadowOffset = new Vector2((float)v, d.Template.ShadowOffset.Y)));
+			Mutate(d => d.Template.ShadowOffset = new Vector2((float)v, d.Template.ShadowOffset.Y), Merge("template")));
 		SubscribeSpin(_shadowY, v =>
-			Mutate(d => d.Template.ShadowOffset = new Vector2(d.Template.ShadowOffset.X, (float)v)));
+			Mutate(d => d.Template.ShadowOffset = new Vector2(d.Template.ShadowOffset.X, (float)v), Merge("template")));
 
-		_titleColor.ColorChanged += c => Mutate(d => d.Template.TitleColor = c);
-		_fieldColor.ColorChanged += c => Mutate(d => d.Template.FieldColor = c);
-		_descriptionColor.ColorChanged += c => Mutate(d => d.Template.DescriptionColor = c);
-		_useNameAsTitle.Toggled += on => Mutate(d => d.Template.UseDisplayNameAsTitle = on);
+		_titleColor.ColorChanged += c => Mutate(d => d.Template.TitleColor = c, Merge("template"));
+		_fieldColor.ColorChanged += c => Mutate(d => d.Template.FieldColor = c, Merge("template"));
+		_descriptionColor.ColorChanged += c => Mutate(d => d.Template.DescriptionColor = c, Merge("template"));
+		_useNameAsTitle.Toggled += on => Mutate(d => d.Template.UseDisplayNameAsTitle = on, Merge("template"));
 		GetNode<Button>($"{Form}/Row4/ResetTemplateButton").Pressed += OnInitTemplatePressed;
 	}
+
+	/// <summary>
+	/// 组一个"属于<b>这一张卡这一处</b>"的合并键：<c>card.{id}.{what}</c>。
+	///
+	/// <b>每一处各自一个键，不是共用一个。</b>共用的后果实测过：改完卡名马上改字号，
+	/// 两者落在同一个时间窗里、mergeKey 又相同，于是历史里只有一条 ——
+	/// 按一次 <c>Ctrl+Z</c> 两件事一起退回去，用户会以为撤销坏了。
+	/// 而"连续敲同一个框"仍然会合并成一条，那正是想要的。
+	/// </summary>
+	private string Merge(string what) => $"card.{SelectedId}.{what}";
 
 	/// <summary>把一个"提交才算数"的输入框接上回调（回车 / 失焦两条都算提交）。</summary>
 	private static void SubscribeText(LineEdit edit, System.Action<string> onSubmit)
@@ -323,6 +382,11 @@ public partial class CardEditorPage : EditorPage
 
 			RefreshImageList();
 			RebuildFieldRows(def);
+
+			// 行重建之后"哪几行有覆盖"的标记要重新落一遍 ——
+			// 新行默认是禁用的，不刷的话覆盖明明在、按钮却点不动。
+			RefreshTargetBar();
+			RefreshOverrideMarks(def);
 		}
 		finally
 		{
@@ -341,10 +405,65 @@ public partial class CardEditorPage : EditorPage
 			(decks.Count == 0 ? "不属于任何卡组" : $"在卡组：{string.Join("、", decks)}");
 
 		_preview.SetDefinition(def);
+
+		// 预览要按<b>这一张的实际值</b>画：按实例编辑时那些覆盖值也是"这张卡的样子"的一部分，
+		// 而桌上那张卡用的就是"定义 + 覆盖"合成出来的值（同一个渲染函数）。
+		_preview.SetOverrides(EditTarget?.FieldOverrides);
+	}
+
+	/// <summary>
+	/// 把"这一行有没有实例覆盖"落到控件上。
+	///
+	/// 判据与 <see cref="MutateFieldValue"/> 里"什么算一处覆盖"必须一致：
+	/// <b>只有"值与定义不同"才算覆盖</b>（值改回定义值时覆盖会被撤掉），
+	/// 所以这里按"值 != 定义值"判定，不看字典里有没有这个键。
+	/// 两处判据不一致的后果很具体：目标条说"有 2 处覆盖"，而两行按钮都是灰的。
+	/// </summary>
+	private void RefreshOverrideMarks(CardDefinition def)
+	{
+		CardObject? card = EditTarget;
+
+		for (int i = 0; i < _rows.Count && i < def.Fields.Count; i++)
+		{
+			string key = def.Fields[i].Key;
+			bool overridden = card is not null
+				&& card.FieldOverrides.TryGetValue(key, out string? v)
+				&& v != def.Fields[i].Value;
+
+			_rows[i].Revert.Disabled = !overridden;
+
+			// 覆盖值写进悬停提示：单单看表单看不出"这一张和别的不一样" ——
+			// 输入框是同一个，里面的值也完全合法。
+			_rows[i].Value.TooltipText = overridden
+				? $"这一张的覆盖值：{card!.FieldOverrides[key]}（定义值：{def.Fields[i].Value}）"
+				: "字段值";
+		}
 	}
 
 	/// <summary>按定义里的字段列表重建那一块（行数变了才调它）。</summary>
 	private void RebuildFieldRows(CardDefinition def)
+	{
+		// <b>建行的全过程都要挡住回调。</b>
+		//
+		// 新建一个 <c>LineEdit { Text = field.Value }</c> 的那一刻就会触发 <c>TextChanged</c>，
+		// 而回调链是"改字段值 → 改定义 / 写覆盖 → 记一条编辑器历史"。
+		// 于是"重建字段行"这件事本身会产出<b>一整套假的改动</b> ——
+		// 实测症状：按实例编辑时改一个字段，历史里多出两条净效果为零的记录，
+		// 而报告里只有"条数不涨"一行 false（真正的机制藏在这一层）。
+		//
+		// 与 <c>RefreshDetail</c> 里回填表单是同一道闸：**给控件赋初值不是用户动作**。
+		_suppressCallbacks = true;
+		try
+		{
+			BuildFieldRows(def);
+		}
+		finally
+		{
+			_suppressCallbacks = false;
+		}
+	}
+
+	private void BuildFieldRows(CardDefinition def)
 	{
 		foreach (Node child in _fieldRows.GetChildren())
 		{
@@ -366,9 +485,13 @@ public partial class CardEditorPage : EditorPage
 			var label = new LineEdit { Text = field.Label, CustomMinimumSize = new Vector2(90f, 0f), TooltipText = "显示用的标签，留空则显示键" };
 			var value = new LineEdit { Text = field.Value, SizeFlagsHorizontal = SizeFlags.ExpandFill, TooltipText = "字段值" };
 
-			key.TextChanged += _ => MutateField(index, f => f.Key = key.Text);
-			label.TextChanged += _ => MutateField(index, f => f.Label = label.Text);
-			value.TextChanged += _ => MutateField(index, f => f.Value = value.Text);
+			// 值走 <see cref="MutateFieldValue"/>：按实例编辑时它写的是覆盖，不是定义。
+			value.TextChanged += t => MutateFieldValue(index, t);
+
+			// 键与标签也是**每一行各自一个合并键**（与值同理）：
+			// 共用的话，连着改两行的键会被并成一条历史。
+			key.TextChanged += _ => MutateField(index, f => f.Key = key.Text, $"key{index}");
+			label.TextChanged += _ => MutateField(index, f => f.Label = label.Text, $"label{index}");
 
 			row.AddChild(key);
 			row.AddChild(label);
@@ -416,11 +539,27 @@ public partial class CardEditorPage : EditorPage
 			remove.Pressed += () => OnRemoveFieldPressed(index);
 			row.AddChild(remove);
 
+			// 「回定义」：把这一张的这个字段撤回定义值。
+			//
+			// <b>只在按实例编辑、且这一行确实有覆盖时才有意义</b>，
+			// 所以默认禁用 —— 一个点了什么都不做的按钮比没有按钮更让人困惑。
+			// 状态由 <see cref="RefreshOverrideMarks"/> 在每次刷详情时更新。
+			var revert = new Button
+			{
+				Text = "回定义",
+				Disabled = true,
+				TooltipText = "把这一张的这个字段改回定义里的值（只对实例覆盖有意义）",
+			};
+
+			revert.Pressed += () => ClearFieldOverrideAt(index);
+			row.AddChild(revert);
+
 			_fieldRows.AddChild(row);
 			_rows.Add(new FieldRow
 			{
 				Key = key, Label = label, Value = value, Slot = slot,
 				FontSize = fontSize, Color = color, ShowLabel = showLabel, Remove = remove,
+				Revert = revert,
 			});
 		}
 	}
@@ -442,16 +581,234 @@ public partial class CardEditorPage : EditorPage
 	};
 
 	/// <summary>改某一行字段（按行号，不按引用 —— 行会被重建）。</summary>
-	private void MutateField(int index, System.Action<CardField> change)
+	private void MutateField(int index, System.Action<CardField> change, string what = "")
 	{
 		if (_suppressCallbacks)
 			return;
 
-		Mutate(d =>
+		Mutate(
+			d =>
+			{
+				if (index >= 0 && index < d.Fields.Count)
+					change(d.Fields[index]);
+			},
+			Merge($"field{index}.{what}"));
+	}
+
+	// ------------------------------------------------------------------ 实例级覆盖
+
+	/// <summary>
+	/// 正在按实例编辑的那张桌上的卡（<c>null</c> = 改定义 / 目标已不在桌上）。
+	///
+	/// 每次都<b>按 uid 重新查</b>，不缓存引用：目标可能被删掉、被读档替换掉，
+	/// 而缓存一个 <c>CardObject</c> 引用就会在那些时刻变成悬空指针
+	/// （症状是"点一下改字段，程序崩在一个和编辑器无关的地方"）。
+	/// </summary>
+	private CardObject? EditTarget
+	{
+		get
 		{
-			if (index >= 0 && index < d.Fields.Count)
-				change(d.Fields[index]);
-		});
+			if (_editInstanceUid.Length == 0)
+				return null;
+
+			foreach (TabletopObject obj in Objects.AllObjects)
+			{
+				if (obj is CardObject card && card.Uid == _editInstanceUid && IsInstanceValid(card))
+					return card;
+			}
+
+			return null;
+		}
+	}
+
+	/// <summary>按实例编辑某个物件（<see cref="EditorPanel.OpenForInstance"/> 调它）。</summary>
+	internal void EditInstance(string uid)
+	{
+		_editInstanceUid = uid;
+
+		CardObject? card = EditTarget;
+		if (card is not null)
+			Select(card.Definition.Id);
+
+		RefreshTargetBar();
+		RefreshDetail();
+	}
+
+	/// <summary>退出"按实例编辑"，回到改定义。</summary>
+	internal void ClearInstanceEdit()
+	{
+		if (_editInstanceUid.Length == 0)
+			return;
+
+		_editInstanceUid = "";
+		RefreshTargetBar();
+		RefreshDetail();
+		Hud.Toast("回到「改定义」——之后的修改会影响所有同类卡");
+	}
+
+	/// <summary>
+	/// 刷新目标条：没在按实例编辑时整条收起来。
+	///
+	/// 文案里带上"这一张有几处覆盖"，因为那正是用户最想知道的一件事 ——
+	/// 「我到底改过它没有」。数字为 0 时说明还没改过。
+	/// </summary>
+	private void RefreshTargetBar()
+	{
+		CardObject? card = EditTarget;
+
+		if (card is null)
+		{
+			_targetBar.Visible = false;
+
+			// 目标从桌上消失了（被删 / 被读档换掉）→ 悄悄退回改定义。
+			// 不弹错：用户删一张牌之后编辑器还停在那一张上，是<b>正常</b>的操作序列。
+			if (_editInstanceUid.Length > 0)
+			{
+				_editInstanceUid = "";
+				_targetBar.Visible = false;
+			}
+
+			return;
+		}
+
+		int overrides = card.FieldOverrides.Count;
+		string face = card.Definition.DisplayName;
+
+		// 第几张：读档之后 uid 会重排，而用户认的是"桌上那张红色的" ——
+		// 序号比 uid 有用得多（uid 只在自检里有用）。
+		int index = 0;
+		int seen = 0;
+		foreach (TabletopObject obj in Objects.AllObjects)
+		{
+			if (obj is not CardObject other || other.Definition.Id != card.Definition.Id)
+				continue;
+
+			seen++;
+			if (other.Uid == card.Uid)
+				index = seen;
+		}
+
+		_targetLabel.Text = $"正在编辑：桌上第 {index} 张「{face}」";
+		_targetHint.Text = overrides == 0
+			? "还没改过这一张 —— 改字段只影响这一张"
+			: $"这一张有 {overrides} 处覆盖（改字段只影响这一张）";
+
+		_targetBar.Visible = true;
+	}
+
+	/// <summary>
+	/// 改一个字段的<b>值</b>。按实例编辑时写覆盖，否则改定义。
+	///
+	/// <b>为什么只有"值"走覆盖：</b>覆盖的载体是 <c>Dictionary&lt;string, string&gt;</c>
+	/// （键 → 值），语义就是"这一张的某个字段值不同"。键、槽位、字号这些属于<b>版式</b>，
+	/// 是整副共用的，按实例改它们既没有数据可用、也不是用户想要的东西。
+	/// </summary>
+	private void MutateFieldValue(int index, string value)
+	{
+		if (_suppressCallbacks)
+			return;
+
+		CardDefinition? def = Selected;
+		if (def is null || index < 0 || index >= def.Fields.Count)
+			return;
+
+		CardObject? card = EditTarget;
+		if (card is null)
+		{
+			MutateField(index, f => f.Value = value);
+			return;
+		}
+
+		// 值回到定义值 → 覆盖该撤掉，而不是留一条"覆盖 = 定义值"的空记录。
+		// 留着的后果很具体：目标条会一直说"这一张有 1 处覆盖"，而它其实与定义一模一样。
+		string key = def.Fields[index].Key;
+		if (value == def.Fields[index].Value)
+			card.ClearFieldOverride(key);
+		else
+			card.SetFieldOverride(key, value);
+
+		// 桌面上那一张要重画（<c>SetFieldOverride</c> 里已经 QueueRedraw，
+		// 但预览是另一个 CanvasItem，它得自己刷）。
+		_preview.QueueRedraw();
+
+		// 目标条与"这一行有没有覆盖"的标记都要跟着走。
+		//
+		// <b>第二句是漏了一次才补上的：</b>第一版只刷了目标条，于是
+		// 「回定义」按钮一直是灰的 —— 覆盖明明生效了，撤回的入口却点不动。
+		// 而自检里那条断言正好把它抓了出来（<c>instance_edit_revert_enabled=false</c>）。
+		RefreshTargetBar();
+		RefreshOverrideMarks(def);
+		Panel.NotifyChanged("改这一张的字段值", Merge($"field{index}.value"));
+	}
+
+	/// <summary>把这一张的某个字段撤回到定义值（那一行上的「回定义」按钮）。</summary>
+	private void ClearFieldOverrideAt(int index)
+	{
+		CardDefinition? def = Selected;
+		CardObject? card = EditTarget;
+		if (def is null || card is null || index < 0 || index >= def.Fields.Count)
+			return;
+
+		card.ClearFieldOverride(def.Fields[index].Key);
+		RefreshDetail();       // 输入框里要显示回定义值
+		RefreshTargetBar();
+		Panel.NotifyChanged();
+		Hud.Toast($"「{def.Fields[index].Key}」已改回定义值");
+	}
+
+	/// <summary>
+	/// 把这一张的<b>全部</b>覆盖撤掉（目标条上那个按钮）。
+	///
+	/// <b>这里有个真 bug，是自检抓出来的：</b>第一版在撤完之后调了 <c>RefreshDetail()</c>
+	/// 想让输入框显示回定义值 —— 而那个方法会<b>重建字段行</b>，
+	/// 重建时把定义值写进新的 <c>LineEdit</c>，那次赋值触发 <c>TextChanged</c>
+	/// → 又走一遍 <see cref="MutateFieldValue"/> → <b>把关掉的覆盖重新建了起来</b>。
+	///
+	/// 症状很隐蔽：界面上输入框确实显示定义值（看着完全正常），而
+	/// <c>FieldOverrides</c> 里那条覆盖还在 —— 于是"清掉了"是假的，
+	/// 目标条上那个数字会立刻跳回 1。
+	/// 判据 <c>instance_edit_bar_updates_after_clear</c> 就是这么红的。
+	///
+	/// 处置：重建行时挡住回调（<c>_suppressCallbacks</c>），
+	/// 与 <see cref="RefreshDetail"/> 里回填表单用的是同一道闸。
+	/// </summary>
+	internal void ClearAllOverrides()
+	{
+		CardObject? card = EditTarget;
+		if (card is null)
+			return;
+
+		int n = card.FieldOverrides.Count;
+		card.FieldOverrides.Clear();
+		card.QueueRedraw();
+
+		RefreshDetail();
+		RefreshTargetBar();
+		Panel.NotifyChanged();
+		Hud.Toast(n == 0 ? "这一张本来就没有覆盖" : $"已撤掉这一张的 {n} 处覆盖");
+	}
+
+	/// <summary>自检用：这一张现在有哪些覆盖（键 → 值）。</summary>
+	internal System.Collections.Generic.Dictionary<string, string> OverridesForTest()
+	{
+		CardObject? card = EditTarget;
+		return card is null
+			? new System.Collections.Generic.Dictionary<string, string>()
+			: new System.Collections.Generic.Dictionary<string, string>(card.FieldOverrides);
+	}
+
+	/// <summary>自检用：按 uid 直接指定目标（跳过右键菜单那一段）。</summary>
+	internal void EditInstanceForTest(string uid) => EditInstance(uid);
+
+	/// <summary>自检用：某一行上的「回定义」按钮（验"没覆盖时它是灰的"）。</summary>
+	internal Button RevertButtonAtForTest(int row) =>
+		row >= 0 && row < _rows.Count ? _rows[row].Revert : new Button();
+
+	/// <summary>自检用：按下某一行的「回定义」—— 发 <c>Pressed</c>，走真实信号。</summary>
+	internal void RevertFieldForTest(int row)
+	{
+		if (row >= 0 && row < _rows.Count)
+			_rows[row].Revert.EmitSignal(BaseButton.SignalName.Pressed);
 	}
 
 	private void OnAddFieldPressed()
@@ -625,7 +982,7 @@ public partial class CardEditorPage : EditorPage
 	}
 
 	/// <summary>页脚那一行提示（给"导入失败"这类消息用）。</summary>
-	public void SetHint(string text)
+	protected override void SetHint(string text)
 	{
 		if (IsInstanceValid(_hint))
 			_hint.Text = text;
@@ -666,8 +1023,12 @@ public partial class CardEditorPage : EditorPage
 			return;
 
 		_rows[row].Value.Text = value;
-		int index = row;
-		MutateField(index, f => f.Value = value);
+
+		// 走 <see cref="MutateFieldValue"/> —— 也就是用户输入时那条路
+		// （"按实例编辑时写覆盖、否则改定义"的分支就在它里面）。
+		// 走 <c>MutateField</c> 的话，自检验的是一条<b>用户按不到</b>的路：
+		// 覆盖模式下一改还是改定义，而断言会全绿。
+		MutateFieldValue(row, value);
 	}
 
 	internal void SetFieldSlotForTest(int row, FieldSlot slot)
@@ -710,7 +1071,7 @@ public partial class CardEditorPage : EditorPage
 	/// 发信号、标脏。编辑器不自己遍历场上实例 —— 那是物件系统的知识
 	/// （哪些卡在用这份定义、实例级覆盖要不要保留）。
 	/// </summary>
-	private void Mutate(System.Action<CardDefinition> change)
+	private void Mutate(System.Action<CardDefinition> change, string mergeKey = "")
 	{
 		if (_suppressCallbacks)
 			return;
@@ -731,17 +1092,39 @@ public partial class CardEditorPage : EditorPage
 		// 注意<b>不在这里调 RefreshDetail()</b>：那会把控件里的文本重新写一遍，
 		// 于是正在输入的那个框会跳到末尾、光标丢失。只有"行数变了"才重建
 		// （见 OnAddFieldPressed / OnRemoveFieldPressed）。
-		Panel.NotifyChanged();
+		//
+		// <b>mergeKey 必须由调用方给</b>（形如 <c>card.{id}.name</c>）：
+		// 编辑器历史的合并是"同一个 mergeKey 且在时间窗内"。不给的话所有编辑
+		// 都带同一个空 key，于是<b>任何两次编辑都会互相合并</b> ——
+		// 用户改完卡名马上改字号，按一次 Ctrl+Z 两件一起退回去。
+		Panel.NotifyChanged(LabelFor(mergeKey));
 	}
+
+	/// <summary>把 mergeKey 变成可读的中文描述；空 mergeKey 退回通用的"卡牌改动"。</summary>
+	private static string LabelFor(string mergeKey) => mergeKey switch
+	{
+		_ when mergeKey.EndsWith(".name") => "改卡名",
+		_ when mergeKey.EndsWith(".face") => "改底图",
+		_ when mergeKey.EndsWith(".back") => "改卡背",
+		_ when mergeKey.Contains(".field") => "改字段值",
+		_ when mergeKey.Contains(".key") || mergeKey.Contains(".label") => "改字段标题",
+		_ when mergeKey.EndsWith(".new") => "新建卡牌",
+		_ when mergeKey.EndsWith(".duplicate") => "复制卡牌",
+		_ when mergeKey.EndsWith(".delete") => "删除卡牌",
+		_ when mergeKey.Contains(".template") => "改版式",
+		_ => "卡牌改动",
+	};
 
 	// ------------------------------------------------------------------ 导入图片
 
 	/// <summary>
-	/// 弹系统文件选择框导入一张图。
+	/// 弹系统文件选择框导入一张图，并<b>立刻设为当前卡的底图</b>
+	/// （导完还要再去下拉里找一遍是多余动作）。
 	///
-	/// 真正的拷贝逻辑在 <see cref="ImageImport.Copy"/>（纯 <c>FileAccess</c>，可自检），
-	/// 这里只负责"拿到一个路径" + 把结果接到定义上。
-	/// 导进来的图会**立刻**被选为当前卡的底图 —— 导完还要再去下拉里找一遍是多余动作。
+	/// <b>对话框与拷贝都收在基类里了</b>（<see cref="EditorPage.ImportImage"/>）——
+	/// 原先只有这一页有导入入口，而「桌面」页的提示干脆写着"用「卡牌」页的导入"、
+	/// 「指示物」页只能从已有图里挑。三页共用一份之后，
+	/// <see cref="ImageImport.Copy"/> 的语义（重名不覆盖、同图复用）只有一处实现。
 	/// </summary>
 	private void OpenImportDialog()
 	{
@@ -751,51 +1134,16 @@ public partial class CardEditorPage : EditorPage
 			return;
 		}
 
-		FileDialog dialog = new()
-		{
-			FileMode = FileDialog.FileModeEnum.OpenFile,
-			Access = FileDialog.AccessEnum.Filesystem,
-			Title = "选一张图片（会复制进当前存档的 images/）",
-			UseNativeDialog = true,
-		};
-
-		dialog.AddFilter("*.png,*.jpg,*.jpeg,*.webp,*.bmp", "图片");
-		dialog.FileSelected += OnImportFileSelected;
-
-		// 挂在面板自己下面：它是 <c>Window</c>，用完要 <c>QueueFree</c>，
-		// 否则每点一次导入就积一个（`PopupMenu` 那一类坑的亲戚）。
-		AddChild(dialog);
-		dialog.PopupCentered(new Vector2I(900, 600));
+		ImportImage(ApplyImportedImage);
 	}
 
-	private void OnImportFileSelected(string path)
+	/// <summary>导入成功之后套用到卡面底图，并让两个下拉（底图 / 卡背）跟上。</summary>
+	internal void ApplyImportedImage(string fileName)
 	{
-		string fileName = ImageImport.Copy(AppPaths.CurrentSave, path);
-		if (fileName.Length == 0)
-		{
-			Hud.Toast($"导入失败：{ImageImport.LastError}");
-			SetHint($"导入失败：{ImageImport.LastError}");
-			return;
-		}
-
 		Mutate(d => d.FaceImage = fileName);
 
 		// 新导入的图要出现在两个下拉里（底图 / 卡背），并且选中它
 		RefreshDetail();
 		Hud.Toast($"已导入 {fileName} 并设为底图");
-	}
-
-	/// <summary>导入对话框里的那个 <c>Window</c> 用完就收（自检也会用到这个约定）。</summary>
-	internal void CloseImportDialogs()
-	{
-		foreach (Node child in GetChildren())
-		{
-			if (child is FileDialog dialog)
-			{
-				dialog.Hide();
-				RemoveChild(dialog);
-				dialog.QueueFree();
-			}
-		}
 	}
 }

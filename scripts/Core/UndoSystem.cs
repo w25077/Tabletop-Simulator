@@ -242,6 +242,18 @@ public partial class UndoSystem : Node
 			return;
 		}
 
+		// <b>编辑器在写回定义时不记。</b>
+		//
+		// 编辑器有自己的一条时间线（<see cref="EditorUndo"/>），而它写回定义时会
+		// 调用物件系统的方法（<c>ApplyCardDefinition</c> 之类），那些方法里有记历史的调用点。
+		// 不挡的话，"在编辑器里改一下、Ctrl+Z 退回去"会在<b>主栈</b>上留下两条净效果为零的记录
+		// —— 用户关掉编辑器再按 Ctrl+Z，会连着按空两次，而历史面板里多出两行看不懂的东西。
+		if (EditorUndo.ApplyingNow)
+		{
+			EditorUndo.NoteMainRecordSuppressedGlobal();
+			return;
+		}
+
 		SceneSnapshot after = SceneSnapshot.Capture(_objects, _zones);
 
 		if (SceneSnapshot.SameContent(_current, after))

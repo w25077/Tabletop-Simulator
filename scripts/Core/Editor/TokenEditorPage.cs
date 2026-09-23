@@ -164,6 +164,7 @@ public partial class TokenEditorPage : EditorPage
 		GetNode<Button>("Row/Left/SpawnButton").Pressed += OnSpawnPressed;
 		_deleteButton.Pressed += OnDeletePressed;
 		GetNode<Button>("Row/Right/FormScroll/Form/ImageRow/RescanButton").Pressed += RefreshImageList;
+		GetNode<Button>("Row/Right/FormScroll/Form/ImageRow/ImportButton").Pressed += OnImportPressed;
 	}
 
 	/// <summary>把一个"提交才算数"的输入框接上回调（回车 / 失焦两条都算提交）。</summary>
@@ -317,6 +318,65 @@ public partial class TokenEditorPage : EditorPage
 		}
 
 		_imagePicker.Selected = 0;
+	}
+
+	// ------------------------------------------------------------------ 按实例编辑
+
+	/// <summary>
+	/// 停到"桌上这一个指示物"上（右键菜单「编辑这个指示物」的落点）。
+	///
+	/// <b>这一页只有第一步：把定义选中。</b>指示物的实例级覆盖还没做 ——
+	/// 数据层也没有对应物（<c>TokenObject</c> 没有 <c>FieldOverrides</c>，
+	/// 它本来就没有"字段"这个概念）。
+	/// 所以这里刻意<b>不假装有</b>：把定义选中、让用户能改这个指示物的外观，
+	/// 而不是给一个按下去什么都不影响这一张的按钮。
+	/// 卡牌那边有覆盖，是因为卡面<b>字段</b>是数据（<c>List&lt;CardField&gt;</c>）；
+	/// 指示物要走到同样一步，得先想清楚"覆盖的是哪个属性"。
+	/// </summary>
+	internal void EditInstance(string uid)
+	{
+		foreach (TabletopObject obj in Objects.AllObjects)
+		{
+			if (obj is not TokenObject token || token.Uid != uid || !IsInstanceValid(token))
+				continue;
+
+			Select(token.Definition.Id);
+			RefreshList();
+			RefreshFields();
+			return;
+		}
+	}
+
+	// ------------------------------------------------------------------ 导入图片
+	/// <summary>
+	/// 在这一页直接导一张图，并立刻设为这个指示物的<b>中心图</b>。
+	///
+	/// 与「桌面」页同一条理由（M5 留下的口子）：导入入口原先只在「卡牌」页，
+	/// 而这一页明明就有"中心图"这个槽位，却只能从已有图里挑。
+	/// </summary>
+	private void OnImportPressed() => ImportImage(ApplyImportedImage);
+
+	/// <summary>导入成功之后套用到中心图，并让下拉跟上。</summary>
+	internal void ApplyImportedImage(string fileName)
+	{
+		if (Selected is null)
+		{
+			Hud.Toast("先选一个指示物");
+			return;
+		}
+
+		Mutate(d => d.Image = fileName);
+		RefreshImageList();
+		Hud.Toast($"已导入 {fileName} 并设为中心图");
+		SetHint($"已导入 {fileName} 并设为中心图");
+	}
+
+	/// <summary>本页的提示条在表单最下面（<c>ImageHint</c>）。</summary>
+	protected override void SetHint(string message)
+	{
+		Label? hint = GetNodeOrNull<Label>("Row/Right/FormScroll/Form/ImageHint");
+		if (hint is not null)
+			hint.Text = message;
 	}
 
 	// ------------------------------------------------------------------ 动作

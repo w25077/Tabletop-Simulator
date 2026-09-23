@@ -225,7 +225,11 @@ layout_mode = 2
 layout_mode = 2
 text = "重新扫描图片"
 
+[node name="ImportButton" type="Button" parent="Row/Right/FormScroll/Form/ImageRow"]
+layout_mode = 2
+text = "导入图片…"
+
 [node name="ImageHint" type="Label" parent="Row/Right/FormScroll/Form"]
 layout_mode = 2
-text = "图片从「卡牌」页导入 —— 一个存档共用一套 images/。"
+text = "一个存档共用一套 images/：三页各自「导入图片…」，导完自动套用到本页那个槽位。"
 autowrap_mode = 3

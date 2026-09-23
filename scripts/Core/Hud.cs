@@ -34,6 +34,9 @@ public partial class Hud : CanvasLayer
 	/// <summary>底部提示栏那一条本身（自检量"两栏等高"要用）。</summary>
 	private PanelContainer _hintBar = null!;
 
+	/// <summary>底部那条快捷键提示的文字。编辑器开关时换文案（见 <see cref="SyncEditorButton"/>）。</summary>
+	private Label _hintLabel = null!;
+
 	/// <summary>当前存档名（信息栏里显示）。由 <see cref="SetSaveName"/> 维护。</summary>
 	private string _saveName = AppPaths.DefaultSaveName;
 
@@ -66,6 +69,7 @@ public partial class Hud : CanvasLayer
 		_zoom100Button = GetNode<Button>("HudRoot/Layout/TopBar/TopRow/Zoom100Button");
 		_toastLabel = GetNode<Label>("HudRoot/Layout/ToastLabel");
 		_hintBar = GetNode<PanelContainer>("HudRoot/Layout/HintBar");
+		_hintLabel = GetNode<Label>("HudRoot/Layout/HintBar/HintLabel");
 		_infoBar = GetNode<PanelContainer>("HudRoot/Layout/InfoBar");
 		_infoLabel = GetNode<Label>("HudRoot/Layout/InfoBar/InfoLabel");
 
@@ -156,6 +160,19 @@ public partial class Hud : CanvasLayer
 	public System.Action? EditorToggleRequested { get; set; }
 
 	/// <summary>
+	/// 编辑器面板（由 <c>Main</c> 装配时塞进来）。
+	///
+	/// <b>上面刚说"HUD 不依赖 EditorPanel 这个类型"，这里为什么又是它？</b>
+	/// 因为这一条只用在<b>按键路由</b>上：<c>Ctrl+Z</c> 要知道"面板开着没有、
+	/// 它那条历史能不能退"。问这件事的是 <c>ObjectManager</c>，
+	/// 而 HUD 恰好是那两处都拿得到的东西（物件系统握着 HUD）。
+	///
+	/// 换一种做法（让物件系统自己去 <c>GetNode</c> 找面板）会把一条隐式路径
+	/// 藏进场景树 —— 而这条引用是显式接线，看得见。
+	/// </summary>
+	public EditorPanel? EditorPanelForShortcuts { get; set; }
+
+	/// <summary>
 	/// 由 <see cref="EditorPanel"/> 在开关之后回调：让按钮文字反映当前状态。
 	///
 	/// <b>不这么做的话，用户看不出按钮现在是"开"还是"关"</b> ——
@@ -167,7 +184,46 @@ public partial class Hud : CanvasLayer
 			return;
 
 		_editorButton.Text = open ? "关闭编辑器　Esc" : "编辑器　F1";
+
+		// 底部那条提示<b>随编辑器开关换文案</b>：两套历史的 Ctrl+Z 走不同的栈，
+		// 而这件事光看顶栏按钮是看不出来的。
+		//
+		// 用<b>同一个标签换字</b>而不是再摆一个只在编辑器开着时显示的标签：
+		// 后者会让"两条底栏等高"那类几何判据多一个要看的东西，
+		// 而这里要做的只是"告诉用户现在 Ctrl+Z 会退什么"。
+		if (IsInstanceValid(_hintLabel))
+			_hintLabel.Text = open ? EditorHintText : TableHintText;
 	}
+
+	/// <summary>编辑器没开时的快捷键提示（与 <c>Main.tscn</c> 里那份初值一致）。</summary>
+	private const string TableHintText =
+		"""滚轮 缩放　·　中键 平移　·　左键拖 移物 / 空白拖 框选　·　拖到区域 归入区域　·　双击牌库或 D 抽牌　·　R 洗牌　·　Shift+拖 抽单张　·　F 整组翻过来 / Shift+F 只翻最上一张　·　[ ] 旋转　·　Alt+滚轮 微旋　·　G 网格吸附　·　Ctrl+D 复制　·　Del 删除""";
+
+	/// <summary>编辑器开着时的提示：说清 Ctrl+Z 现在退的是哪一条历史。</summary>
+	private const string EditorHintText =
+		"编辑器：Ctrl+Z 退编辑器改动（改定义 / 实例覆盖）　·　" +
+		"Ctrl+Alt+Z 退桌面动作（拖拽 / 翻面 / 抽牌）　·　F1 或 Esc 关面板";
+
+	/// <summary>自检用：底部提示现在写的是哪一版文案。</summary>
+	internal string HintTextForTest => IsInstanceValid(_hintLabel) ? _hintLabel.Text : "";
+
+	/// <summary>自检用：这条提示此刻是不是"编辑器版"。</summary>
+	internal bool HintShowsEditorText => HintTextForTest == EditorHintText;
+
+	/// <summary>
+	/// 自检用：<c>Ctrl+Z</c> 路由那几个条件各是什么。
+	///
+	/// 存在的理由与 M4 那几个计数器一样（<b>把猜换成读</b>）：
+	/// "面板开着按 Ctrl+Z 没反应"至少有四种原因 —— 接线没塞进来、面板判成关着、
+	/// 编辑器栈没接上、或者被"强制走桌面那条"的键抢先。
+	/// 光看一行 "没反应" 一个都排不掉。
+	/// </summary>
+	internal Godot.Collections.Dictionary UndoRoutingForTest => new()
+	{
+		["panel_bound"] = EditorPanelForShortcuts is not null,
+		["panel_open"] = EditorPanelForShortcuts?.IsOpen ?? false,
+		["editor_stack_bound"] = EditorPanelForShortcuts?.EditorUndoForTest is not null,
+	};
 
 	/// <summary>把 HUD 接到桌面与相机上。</summary>
 	public void Bind(Board board, BoardCamera camera)

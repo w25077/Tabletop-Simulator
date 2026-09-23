@@ -286,6 +286,17 @@ public partial class DevCapture : Node
 						GD.Print("[DevCapture] phase: editor simulation");
 						report["editor_simulation"] = await DevEditorSim.Probe(
 							saveMain, objects, zones, undo);
+
+						// 存档缩略图（M5 遗留口子）。排在编辑器之后：它会存盘、
+						// 删自己刚写的缩略图再存一次 —— 那两步都会动磁盘，
+						// 排在存档与编辑器两节之前会把它们的"存/读往返"搅乱。
+						if (saveMain.GetNodeOrNull<ThumbnailView>("HUD/HudRoot/ThumbnailView")
+							is ThumbnailView thumbView)
+						{
+							GD.Print("[DevCapture] phase: thumbnail simulation");
+							report["thumbnail_simulation"] = DevThumbnailSim.Probe(
+								this, saveMain, objects, thumbView);
+						}
 					}
 				}
 			}

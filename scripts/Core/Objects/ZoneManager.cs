@@ -546,13 +546,17 @@ public partial class ZoneManager : Node2D, IZoneInteraction
 	/// <summary>该物件所属的叠放区域；不属于、或该区域不是叠放排版时返回 <c>null</c>。</summary>
 	public Zone? StackZoneOf(TabletopObject obj)
 	{
+		Zone? zone = ZoneOf(obj);
+		return zone?.Definition.SortMode == ZoneSortMode.Stack ? zone : null;
+	}
+
+	/// <summary>该物件所属的区域（<b>不分排版</b>）；不属于时返回 <c>null</c>。</summary>
+	public Zone? ZoneOf(TabletopObject obj)
+	{
 		if (string.IsNullOrEmpty(obj.ZoneId))
 			return null;
 
-		if (!_zones.TryGetValue(obj.ZoneId, out Zone? zone))
-			return null;
-
-		return zone.Definition.SortMode == ZoneSortMode.Stack ? zone : null;
+		return _zones.TryGetValue(obj.ZoneId, out Zone? zone) ? zone : null;
 	}
 
 	/// <summary>鼠标移动：维护"悬停的区域"。物件优先 —— 悬停在物件上时区域不算被指着。</summary>

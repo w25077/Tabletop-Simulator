@@ -91,7 +91,35 @@ internal static class DevInputSim
 	}
 
 	/// <summary>
-	/// 按下（不松开）一个键。
+	/// 合成一次"带修饰键"的按键（<c>Ctrl+Z</c> 这类）。
+	///
+	/// <b>为什么不能拿 <see cref="PushKey"/> 凑合：</b>它不设 <c>CtrlPressed</c>，
+	/// 于是事件不匹配 <c>tt_undo</c>（那个动作登记的是带 Ctrl 的绑定）——
+	/// 键送到了、什么都没发生，而报告里只有"没反应"三个字。
+	/// 与 M3 那条"合成输入与真实输入的路不一样"是同一类坑。
+	/// </summary>
+	internal static void PushKeyWithModifiers(Key key, bool ctrl = false, bool shift = false, bool alt = false)
+	{
+		Input.ParseInputEvent(new InputEventKey
+		{
+			Keycode = key,
+			Pressed = true,
+			CtrlPressed = ctrl,
+			ShiftPressed = shift,
+			AltPressed = alt,
+		});
+
+		Input.ParseInputEvent(new InputEventKey
+		{
+			Keycode = key,
+			Pressed = false,
+			CtrlPressed = ctrl,
+			ShiftPressed = shift,
+			AltPressed = alt,
+		});
+	}
+
+	/// <summary>按下（不松开）一个键。
 	/// 修饰键必须这样处理：物件系统用 <c>Input.IsKeyPressed(Key.Shift)</c> 判断，
 	/// 那读的是 Input 的全局按键状态，一次按下+松开是测不出来的。
 	/// </summary>

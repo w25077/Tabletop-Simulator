@@ -36,6 +36,7 @@ public partial class SavePanel : Node
 	private ConfirmationDialog _confirm = null!;
 	private AcceptDialog _prompt = null!;
 	private LineEdit _promptInput = null!;
+	private ThumbnailView _thumb = null!;
 
 	private ObjectManager _objects = null!;
 	private ZoneManager _zones = null!;
@@ -45,6 +46,19 @@ public partial class SavePanel : Node
 
 	/// <summary>当前存档名。<b>唯一真相</b>；顶栏那个标签也是从它刷的。</summary>
 	public string CurrentSave { get; private set; } = AppPaths.DefaultSaveName;
+
+	/// <summary>
+	/// 定义池被整体换掉了（读档 / 切存档 / 新建存档）→ 通知外面刷新。
+	///
+	/// <b>为什么要有这个回调：</b>那三条路都会把 <c>CardDefinitions</c> 等换成
+	/// 另一批对象，而<b>编辑器的分页里存的是上一次刷新的结果</b>。
+	/// 不通知的话，启动后第一次按 F1 看到的是<b>示例内容</b>（火球术那一套），
+	/// 而不是刚读回来的存档内容 —— 这正是用户实测报上来的那一条。
+	///
+	/// 与 <c>Hud.SaveRequested</c> / <c>Objects.EditInstanceRequested</c> 同一个套路：
+	/// <b>接线在 <c>Main</c>，两端互不认识</b>（SavePanel 不该知道编辑器长什么样）。
+	/// </summary>
+	public System.Action? DefinitionsReloaded { get; set; }
 
 	/// <summary>待确认的删除目标（二次确认对话框是复用的，所以要把意图记在外面）。</summary>
 	private string _pendingDelete = "";
@@ -89,6 +103,12 @@ public partial class SavePanel : Node
 		// 这里只取来接线。不许在代码里 new 节点。
 		_menu = GetParent().GetNode<PopupMenu>("HudRoot/SaveMenu");
 		_menu.IdPressed += OnItemPressed;
+
+		// 存档缩略图预览。它在 HudRoot 里排在最后（画在所有 HUD 之上），
+		// 由这里按菜单的实际位置摆放 —— 见 PositionThumbnail 的说明。
+		_thumb = GetParent().GetNode<ThumbnailView>("HudRoot/ThumbnailView");
+		_menu.IdFocused += OnMenuItemFocused;
+		_menu.PopupHide += OnMenuClosed;
 
 		_prompt = GetParent().GetNode<AcceptDialog>("HudRoot/SaveNamePrompt");
 		_promptInput = _prompt.GetNode<LineEdit>("SaveNameInput");
@@ -153,6 +173,117 @@ public partial class SavePanel : Node
 		Refresh();
 		_menu.Position = (Vector2I)ClampToViewport(_button.GetGlobalRect());
 		_menu.Popup();
+		PositionThumbnail();
+	}
+
+	// ------------------------------------------------------------------ 缩略图预览
+
+	/// <summary>
+	/// 把预览框摆到菜单<b>下方</b>。
+	///
+	/// <b>为什么不写死坐标：</b>菜单的位置是跟着「存档 ▾」按钮算出来的
+	/// （<see cref="ClampToViewport"/>），按钮一动、或窗口一窄，写死的预览框
+	/// 就会和菜单错位 —— 而"预览框飘在别处"和"预览没弹出来"在截图里很像。
+	///
+	/// 菜单高度用 <c>GetContentsMinimumSize()</c> 估：它读的是内容，
+	/// 不依赖"窗口已经真的显示出来了"（<c>Popup()</c> 之后窗口尺寸未必立刻可用）。
+	/// 估不出来时退回 <see cref="MinimumMenuEstimate"/>，宁可离得远一点也不要压住菜单。
+	/// </summary>
+	private void PositionThumbnail()
+	{
+		Vector2 viewport = GetViewport().GetVisibleRect().Size;
+		Vector2 menuSize = _menu.GetContentsMinimumSize();
+		if (menuSize.X <= 0f || menuSize.Y <= 0f)
+			menuSize = MinimumMenuEstimate;
+
+		Vector2 size = _thumb.Size;
+		if (size.X < 40f || size.Y < 30f)
+			size = new Vector2(320f, 180f);
+
+		// 下边界让开底部那两条栏（信息栏 + 快捷键提示），它们也是用户要看的东西。
+		float maxBottom = BottomBarsReserve;
+		float x = Mathf.Clamp(_menu.Position.X, 8f, Mathf.Max(viewport.X - size.X - 8f, 8f));
+		float y = _menu.Position.Y + menuSize.Y + 8f;
+		y = Mathf.Clamp(y, 8f, Mathf.Max(viewport.Y - maxBottom - size.Y - 8f, 8f));
+
+		_thumb.Position = new Vector2(x, y);
+	}
+
+	/// <summary>菜单内容量不出来时的估计值（够放"当前 + 若干存档 + 五个动作"）。</summary>
+	private static readonly Vector2 MinimumMenuEstimate = new(280f, 240f);
+
+	/// <summary>底部两条状态栏的高度预留（<c>hud_layout</c> 里量到的是两条各 34）。</summary>
+	private const float BottomBarsReserve = 76f;
+
+	/// <summary>悬停某一行 → 显示那个存档的缩略图；悬停非存档行 → 收起来。</summary>
+	private void OnMenuItemFocused(long id)
+	{
+		FocusEvents++;
+		LastFocusedId = id;
+
+		int item = (int)id;
+		if (item < (int)Item.SaveBase || item >= (int)Item.SaveBase + _listed.Count)
+		{
+			_thumb.Clear();
+			_thumb.Hide();
+			return;
+		}
+
+		string name = _listed[item - (int)Item.SaveBase];
+		_thumb.Show(ThumbnailPath(name));
+		_thumb.Show();
+		PreviewedSaveForTest = name;
+	}
+
+	private void OnMenuClosed()
+	{
+		_thumb.Hide();
+		PreviewedSaveForTest = "";
+	}
+
+	/// <summary>某个存档的缩略图路径（有没有这个文件由 <see cref="ThumbnailView.Show"/> 判）。</summary>
+	private static string ThumbnailPath(string saveName) => $"{AppPaths.ThumbsDir(saveName)}/board.png";
+
+	/// <summary>自检用：此刻预览的是哪个存档（空串 = 没在预览）。</summary>
+	internal string PreviewedSaveForTest { get; private set; } = "";
+
+	/// <summary>自检用：预览控件的引用。</summary>
+	internal ThumbnailView ThumbForTest => _thumb;
+
+	/// <summary>
+	/// 只读计数器：菜单悬停回调被调用了几次、最后一次的 id 是多少。
+	///
+	/// 存在的理由与 M4 那几个计数器一样 —— <b>把猜换成读</b>。
+	/// 自检里"悬停之后什么都没显示"这一条红了三轮，而报告里没有任何一项
+	/// 能回答"回调到底有没有被调用"：它可能是信号没送到，也可能是送到了、
+	/// 但 id 落在"非存档行"那一支里被正确地收了起来。这两个的处置完全相反。
+	/// </summary>
+	internal int FocusEvents { get; private set; }
+
+	internal long LastFocusedId { get; private set; } = -999;
+
+	/// <summary>
+	/// 自检用：把预览框按真实规则摆一次并显示某个存档的图。
+	///
+	/// 走的是与"菜单弹出"完全相同的那两条路（<see cref="PositionThumbnail"/> +
+	/// <see cref="ThumbnailView.Show"/>），因为自检里菜单<b>从来没有真的弹出来过</b>
+	/// （<c>PopupMenu</c> 是 <c>Window</c>，真弹会抢走后续合成鼠标事件）——
+	/// 若在这里另写一套摆放，验的就不是产品那份规则了。
+	/// </summary>
+	internal void ShowPreviewForTest(string saveName)
+	{
+		PositionThumbnail();
+		_thumb.Show(ThumbnailPath(saveName));
+		_thumb.Show();
+		PreviewedSaveForTest = saveName;
+	}
+
+	/// <summary>自检用：把预览收干净（探针不许留下可观测的状态变化）。</summary>
+	internal void ReleasePreviewForTest()
+	{
+		_thumb.Clear();
+		_thumb.Hide();
+		PreviewedSaveForTest = "";
 	}
 
 	private Vector2 ClampToViewport(Rect2 anchor)
@@ -294,11 +425,25 @@ public partial class SavePanel : Node
 	public bool SaveNow()
 	{
 		bool ok = SaveSystem.Save(CurrentSave, _objects, _zones, _theme);
+
+		// 存档成功才抓缩略图 —— 存失败时视口里那一桌并没落盘，
+		// 拿它当缩略图会让人以为"这个存档里有这些东西"。
+		//
+		// 这里刻意不判"编辑器面板开着没有"：抓到的画面上可能压着面板，
+		// 但"确实存过一张图"与"图里没有面板"是两件事，后者不值一次额外的隐藏/恢复。
+		if (ok)
+			CaptureThumbnail();
+
 		_hud.Toast(ok
 			? $"已保存「{CurrentSave}」（{_objects.ObjectCount} 件）"
 			: $"保存失败：{SaveSystem.LastError}");
 
 		Refresh();
+
+		// 正好在预览这个存档 → 立刻换上刚抓的新图（不然它还显示存档前那一张）。
+		if (_thumb.Visible && PreviewedSaveForTest == CurrentSave)
+			_thumb.Show(ThumbnailPath(CurrentSave));
+
 		return ok;
 	}
 
@@ -339,6 +484,11 @@ public partial class SavePanel : Node
 		SaveSystem.Save(CurrentSave, _objects, _zones, _theme);
 		_objects.NotifyRestored();
 		Refresh();
+
+		// 定义池刚被换成"示例那一份"→ 让编辑器各页重新读一遍。
+		// 漏掉这一句的症状：新建存档之后按 F1，看到的是上一个存档的卡池。
+		DefinitionsReloaded?.Invoke();
+
 		_hud.Toast($"已新建存档「{saveName}」");
 		return true;
 	}
@@ -371,6 +521,10 @@ public partial class SavePanel : Node
 		HistoryLog.Clear();
 
 		Refresh();
+
+		// 换存档 = 换了一整套定义 → 编辑器各页必须重新读（详见 DefinitionsReloaded）。
+		DefinitionsReloaded?.Invoke();
+
 		_hud.Toast($"已切到「{saveName}」（{_objects.ObjectCount} 件）");
 		return true;
 	}
@@ -386,18 +540,34 @@ public partial class SavePanel : Node
 	// ------------------------------------------------------------------ 缩略图
 
 	/// <summary>
-	/// 抓一张存档缩略图存进 <c>thumbs/</c>。
+	/// 即时抓一张缩略图存进 <c>thumbs/board.png</c>。
 	///
-	/// <b>必须等一帧再抓</b>：调用它的那一刻视口里还是上一帧的内容
-	/// （比如换存档之后还是旧桌面）。所以它是个协程而不是普通方法。
+	/// <b>为什么从 <c>async void</c> 改成同步：</b>原来它 <c>await</c> 一帧再抓，
+	/// 但抓图的调用点就是"保存刚刚成功"那一刻 —— 此刻视口里已经是这一桌的当前画面，
+	/// 再等一帧只会多出两种无关的失败可能：存档被删掉（<c>await</c> 之后
+	/// <c>CurrentSave</c> 可能已经换了）与视图被换掉。同步抓还让"存了图"这件事
+	/// 在 <see cref="SaveNow"/> 返回时就已经成立，自检不必靠等帧去赌。
 	/// </summary>
-	public async void CaptureThumbnail()
+	public void CaptureThumbnail()
 	{
-		await ToSignal(RenderingServer.Singleton, RenderingServer.SignalName.FramePostDraw);
+		// <b>先强制画一帧。</b>
+		//
+		// 两条实测出来的理由：
+		// 1. 调用点就在"保存成功"那一刻，而视口里可能还是<b>上一帧</b>的画面
+		//    （相机刚移动过、面板刚要收起）；
+		// 2. 更隐蔽的一条：自检里连续存两次之间相机被移动过，第二张图于是拍到
+		//    移动<b>之前</b>的机位 —— 而"缩略图里是上一帧"这件事，
+		//    在任何单点读数里都看不出来（文件在、尺寸对、内容也是这一桌）。
+		//
+		// <c>ForceDraw</c> 让当前帧立刻画完，于是 <c>GetImage()</c> 拿到的是此刻的画面。
+		RenderingServer.ForceDraw();
 
 		Image? image = GetViewport()?.GetTexture()?.GetImage();
 		if (image is null)
+		{
+			GD.PushWarning("[SavePanel] 抓不到视口画面，缩略图跳过");
 			return;
+		}
 
 		image.Resize(320, 180, Image.Interpolation.Bilinear);
 
